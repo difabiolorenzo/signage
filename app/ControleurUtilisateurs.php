@@ -8,7 +8,7 @@ declare(strict_types=1);
  */
 final class ControleurUtilisateurs
 {
-    private const MOT_DE_PASSE_MIN = 10;
+    public const MOT_DE_PASSE_MIN = 10;
 
     /** GET /api/utilisateurs */
     public static function liste(): never
@@ -83,11 +83,27 @@ final class ControleurUtilisateurs
         Db::executer('UPDATE utilisateurs SET nom = ?, role = ?, actif = ? WHERE id = ?', [$nom, $role, $actif ? 1 : 0, $id]);
         if (array_key_exists('mot_de_passe', $corps)) {
             Db::executer('UPDATE utilisateurs SET mot_de_passe = ? WHERE id = ?', [self::empreinte($corps['mot_de_passe']), $id]);
+            Auth::fermerSessions($id);
         }
         Reponse::json(['ok' => true]);
     }
 
-    /** PUT /api/utilisateurs/{id}/droits { chaines: [id, …] } : remplace la liste des chaînes. */
+    /**
+     * GET /api/annuaire (connecté) : identifiant numérique et nom des utilisateurs actifs, pour
+     * choisir la portée d'une playlist ou d'un média. Rien d'autre (ni identifiant de connexion, ni rôle).
+     */
+    public static function annuaire(): never
+    {
+        Auth::exigerConnexion();
+        $lignes = Db::lignes('SELECT u.id, ' . Bibliotheque::sqlNom('u') . ' AS nom FROM utilisateurs u WHERE u.actif = 1 ORDER BY nom');
+        Reponse::json(['utilisateurs' => array_map(static fn (array $u): array => ['id' => (int) $u['id'], 'nom' => $u['nom']], $lignes)]);
+    }
+
+    /**
+     * PUT /api/utilisateurs/{id}/droits { chaines: [id, …] } : remplace la liste des chaînes.
+     * avertissement : playlists dont il est l'auteur et qui restent programmées sur une chaîne
+     * qu'il perd (il peut toujours les modifier).
+     */
     public static function droits(int $id): never
     {
         Droits::exigerAdmin(Auth::exigerConnexion());
@@ -104,16 +120,32 @@ final class ControleurUtilisateurs
                 Reponse::erreur('Chaîne introuvable.', 400);
             }
         }
+        $perdues = array_diff(
+            array_map('intval', array_column(Db::lignes('SELECT chaine_id FROM droits WHERE utilisateur_id = ?', [$id]), 'chaine_id')),
+            $chaines
+        );
         Db::transaction(static function () use ($id, $chaines): void {
             Db::executer('DELETE FROM droits WHERE utilisateur_id = ?', [$id]);
             foreach (array_unique($chaines) as $c) {
                 Db::executer('INSERT INTO droits (utilisateur_id, chaine_id) VALUES (?, ?)', [$id, $c]);
             }
         });
-        Reponse::json(['ok' => true]);
+
+        $concernees = [];
+        if ($perdues !== []) {
+            $siennes = array_column(Db::lignes('SELECT id, nom FROM playlists WHERE auteur_id = ?', [$id]), 'nom', 'id');
+            foreach (Bibliotheque::chainesProgrammant(array_map('intval', array_keys($siennes))) as $playlistId => $chainesPlaylist) {
+                foreach (array_intersect_key($chainesPlaylist, array_flip($perdues)) as $nomChaine) {
+                    $concernees[] = "« {$siennes[$playlistId]} » ($nomChaine)";
+                }
+            }
+        }
+        Reponse::json(['ok' => true, 'avertissement' => $concernees === [] ? null
+            : 'Cet utilisateur reste auteur de playlists diffusées sur des chaînes qu\'il ne gère plus, et peut toujours les modifier : '
+                . implode(', ', $concernees) . '. Transférez-les ou retirez-les de la programmation si besoin.']);
     }
 
-    private static function nom(mixed $nom): string
+    public static function nom(mixed $nom): string
     {
         $nom = trim((string) $nom);
         if (mb_strlen($nom) > 100) {
@@ -130,7 +162,7 @@ final class ControleurUtilisateurs
         return $role;
     }
 
-    private static function empreinte(mixed $motDePasse): string
+    public static function empreinte(mixed $motDePasse): string
     {
         if (!is_string($motDePasse) || mb_strlen($motDePasse) < self::MOT_DE_PASSE_MIN || strlen($motDePasse) > 4096) {
             Reponse::erreur('Mot de passe : ' . self::MOT_DE_PASSE_MIN . ' caractères au moins.', 400);

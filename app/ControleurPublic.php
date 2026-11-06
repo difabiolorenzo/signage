@@ -25,14 +25,20 @@ final class ControleurPublic
             [$chaineId]
         );
         $defaut = $chaine['playlist_defaut_id'] === null ? null : (int) $chaine['playlist_defaut_id'];
-        $programmation = new Programmation($plages, $defaut);
+        $programmation = new Programmation($plages, $defaut, Programmation::validitesChaine($chaineId));
 
         $maintenant = new DateTimeImmutable();
         $playlistId = $programmation->playlistA($maintenant);
         $playlist = $playlistId === null ? null : Db::ligne(
-            'SELECT id, disposition, regions, pages FROM playlists WHERE id = ? AND chaine_id = ?',
-            [$playlistId, $chaineId]
+            'SELECT id, disposition, regions, pages, portee FROM playlists WHERE id = ?',
+            [$playlistId]
         );
+        // Invariant de diffusion (voir Bibliotheque) : vérification défensive.
+        if ($playlist !== null && $playlist['portee'] !== 'globale'
+            && !in_array($chaineId, Bibliotheque::acces('playlist', [$playlistId])[$playlistId]['chaines'], true)) {
+            error_log("Chaîne $chaineId : la playlist $playlistId est programmée sans y être ouverte ; rien n'est affiché.");
+            $playlist = null;
+        }
         $prochain = $programmation->prochainChangement($maintenant);
 
         Reponse::json([
@@ -47,13 +53,13 @@ final class ControleurPublic
             'etat' => substr(sha1($chaine['version'] . '-' . ($playlist['id'] ?? 0)), 0, 16),
             'maintenant' => $maintenant->format(DATE_ATOM),
             'prochain_changement' => $prochain?->format(DATE_ATOM),
-            'playlist' => $playlist === null ? null : self::playlistPublique($playlist, $chaineId),
+            'playlist' => $playlist === null ? null : self::playlistPublique($playlist),
         ]);
     }
 
     /**
      * GET /api/public/{slug}/rss?url= : titres d'un flux RSS, via le serveur.
-     * Seuls les flux utilisés par un widget RSS de la chaîne sont relayés : l'API n'est pas un
+     * Seuls les flux utilisés par un widget RSS d'une playlist programmée sur la chaîne sont relayés : l'API n'est pas un
      * relais ouvert. Cache de 5 minutes ; si le flux ne répond plus, le dernier résultat est servi.
      */
     public static function rss(string $slug): never
@@ -67,7 +73,7 @@ final class ControleurPublic
             Reponse::erreur('Chaîne introuvable.', 404);
         }
         if (!self::fluxUtilise((int) $chaineId, $url)) {
-            Reponse::erreur("Ce flux n'est utilisé par aucune playlist de la chaîne.", 403);
+            Reponse::erreur("Ce flux n'est utilisé par aucune playlist programmée sur la chaîne.", 403);
         }
 
         $cache = sys_get_temp_dir() . '/signage-rss-' . sha1($url) . '.json';
@@ -89,7 +95,12 @@ final class ControleurPublic
 
     private static function fluxUtilise(int $chaineId, string $url): bool
     {
-        foreach (Db::lignes('SELECT id, pages FROM playlists WHERE chaine_id = ?', [$chaineId]) as $playlist) {
+        $ids = Bibliotheque::playlistsProgrammees($chaineId);
+        if ($ids === []) {
+            return false;
+        }
+        $marques = implode(', ', array_fill(0, count($ids), '?'));
+        foreach (Db::lignes("SELECT id, pages FROM playlists WHERE id IN ($marques)", $ids) as $playlist) {
             foreach (Pages::lire((string) $playlist['pages'], (int) $playlist['id']) as $page) {
                 foreach (is_array($page['widgets'] ?? null) ? $page['widgets'] : [] as $widget) {
                     if (is_array($widget) && ($widget['type'] ?? null) === 'rss' && ($widget['url'] ?? null) === $url) {
@@ -101,43 +112,29 @@ final class ControleurPublic
         return false;
     }
 
-    private static function playlistPublique(array $playlist, int $chaineId): array
+    private static function playlistPublique(array $playlist): array
     {
         $regions = json_decode((string) $playlist['regions'], true);
         return [
             'disposition' => $playlist['disposition'],
             'portrait' => ControleurPlaylists::estPortrait($playlist['disposition']),
             'regions' => is_array($regions) ? $regions : [],
-            'pages' => self::avecUrlsMedias(Pages::lire((string) $playlist['pages'], (int) $playlist['id']), $chaineId),
+            'pages' => self::avecUrlsMedias(Pages::lire((string) $playlist['pages'], (int) $playlist['id'])),
         ];
     }
 
     /**
-     * Remplace dans les widgets média l'identifiant de chaque média par son URL et son type.
-     * Un média supprimé ou appartenant à une autre chaîne est retiré.
+     * Remplace dans les widgets média l'identifiant de chaque média par son URL et son type, et
+     * ajoute aux codes QR l'URL de leur logo (logo_url, image seulement). Un média supprimé est
+     * retiré. La portée d'un média ne limite pas son affichage : seulement qui peut l'insérer.
      */
-    private static function avecUrlsMedias(array $pages, int $chaineId): array
+    private static function avecUrlsMedias(array $pages): array
     {
-        $ids = [];
-        foreach ($pages as $page) {
-            foreach (is_array($page['widgets'] ?? null) ? $page['widgets'] : [] as $widget) {
-                if (is_array($widget) && ($widget['type'] ?? null) === 'media' && is_array($widget['elements'] ?? null)) {
-                    foreach ($widget['elements'] as $element) {
-                        if (is_array($element) && is_int($element['media'] ?? null)) {
-                            $ids[$element['media']] = true;
-                        }
-                    }
-                }
-            }
-        }
-
+        $ids = Pages::medias($pages);
         $medias = [];
         if ($ids !== []) {
             $marques = implode(', ', array_fill(0, count($ids), '?'));
-            $lignes = Db::lignes(
-                "SELECT id, fichier, type FROM medias WHERE chaine_id = ? AND id IN ($marques)",
-                [$chaineId, ...array_keys($ids)]
-            );
+            $lignes = Db::lignes("SELECT id, fichier, type FROM medias WHERE id IN ($marques)", $ids);
             $base = Config::get('url_base') . '/uploads/';
             foreach ($lignes as $m) {
                 $medias[(int) $m['id']] = ['url' => $base . rawurlencode($m['fichier']), 'type' => $m['type']];
@@ -150,6 +147,14 @@ final class ControleurPublic
                 continue;
             }
             foreach ($page['widgets'] as &$widget) {
+                if (is_array($widget) && ($widget['type'] ?? null) === 'qr') {
+                    $logo = is_int($widget['logo'] ?? null) ? ($medias[$widget['logo']] ?? null) : null;
+                    unset($widget['logo'], $widget['logo_url']);
+                    if ($logo !== null && str_starts_with($logo['type'], 'image/')) {
+                        $widget['logo_url'] = $logo['url'];
+                    }
+                    continue;
+                }
                 if (!is_array($widget) || ($widget['type'] ?? null) !== 'media') {
                     continue;
                 }

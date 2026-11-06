@@ -10,6 +10,8 @@ import {
 } from '../commun/widgets.js';
 import { urlWeb } from '../lecteur/outils.js';
 import { formaterDate } from '../lecteur/widgets/horloge.js';
+import { JOURS_METEO, MODELES_METEO } from '../lecteur/widgets/meteo.js';
+import { FORMES_QR, problemeLisibilite, QR_DEFAUTS } from '../lecteur/widgets/qr.js';
 import { identifiantVideo } from '../lecteur/widgets/youtube.js';
 import { htmlMarkdown, htmlTexteSimple, MODES_TEXTE, modeTexte } from '../commun/texte_riche.js';
 import { el } from './dom.js';
@@ -131,11 +133,7 @@ function reglagesWidget(w, f, medias) {
                 f.aide('La vidéo passe sans le son et en boucle. Un seul widget YouTube par page.'),
             ];
         case 'qr':
-            return [
-                ligne('Lien à encoder', f.texte(w, 'url', { type: 'url', placeholder: 'https://…' })),
-                !urlWeb(w.url) && f.avertissement('Adresse invalide : elle doit commencer par http:// ou https://.'),
-                ...f.styleTexte(w),
-            ];
+            return reglagesQr(w, f, medias);
         case 'horloge':
         case 'date_heure': {
             const exemple = new Date();
@@ -163,11 +161,63 @@ function reglagesWidget(w, f, medias) {
             return [
                 ligne('Ville', f.texte(w, 'ville', { maxlength: 100 })),
                 ligne('Unité', f.liste(w, 'celsius', [{ valeur: true, libelle: 'Celsius (°C)' }, { valeur: false, libelle: 'Fahrenheit (°F)' }])),
+                ligne('Affichage', f.liste(w, 'modele', MODELES_METEO)),
+                MODELES_METEO.find((m) => m.valeur === (w.modele ?? 'actuelle'))?.jours
+                    && ligne('Prévisions', ...f.nombre(w, 'jours', { min: JOURS_METEO.min, max: JOURS_METEO.max, suffixe: 'jours', defaut: JOURS_METEO.defaut })),
+                f.aide("Chaque affichage s'adapte à la forme de la région : en colonne dans une région haute, en ligne dans une région large."),
                 ...f.styleTexte(w),
             ];
         default:
             return [f.avertissement('Type de widget inconnu.')];
     }
+}
+
+/** Code QR : lien, couleurs (avec alerte de lisibilité), marge, forme des modules, logo. */
+function reglagesQr(w, f, medias) {
+    const alerte = el('p', { class: 'avertissement', role: 'status' });
+    const verifier = () => {
+        const probleme = problemeLisibilite(w.qr_couleur ?? QR_DEFAUTS.qr_couleur, w.qr_fond ?? QR_DEFAUTS.qr_fond);
+        const marge = w.qr_marge ?? QR_DEFAUTS.qr_marge;
+        const messages = [probleme, marge < 2 && 'Marge inférieure à 2 modules : certains lecteurs ne trouvent plus le code (la norme en demande 4).'].filter(Boolean);
+        alerte.textContent = messages.join(' ');
+        alerte.hidden = messages.length === 0;
+    };
+    const couleurModules = f.couleur(w, 'qr_couleur', QR_DEFAUTS.qr_couleur);
+    const couleurFond = f.couleur(w, 'qr_fond', QR_DEFAUTS.qr_fond);
+    const marge = f.nombre(w, 'qr_marge', { min: 0, max: 10, suffixe: 'modules', defaut: QR_DEFAUTS.qr_marge });
+    [couleurModules, couleurFond, marge[0]].forEach((c) => c.addEventListener('input', verifier));
+    verifier();
+
+    // Un média que l'utilisateur ne voit pas (accessible: false) reste proposé s'il est déjà le logo.
+    const images = medias.filter((m) => String(m.type).startsWith('image/') && (m.accessible !== false || m.id === w.logo));
+    const logo = el('select', {},
+        el('option', { value: '', text: '— Aucun —' }),
+        images.map((m) => el('option', { value: m.id, text: m.nom, selected: m.id === w.logo })),
+        Number.isInteger(w.logo) && !images.some((m) => m.id === w.logo) && el('option', { value: w.logo, text: 'Média introuvable', selected: true }));
+    logo.addEventListener('change', () => {
+        if (logo.value === '') {
+            delete w.logo;
+        } else {
+            w.logo = Number(logo.value);
+        }
+        f.modifieStructure();
+    });
+
+    return [
+        ligne('Lien à encoder', f.texte(w, 'url', { type: 'url', placeholder: 'https://…' })),
+        !urlWeb(w.url) && f.avertissement('Adresse invalide : elle doit commencer par http:// ou https://.'),
+        el('h4', { text: 'Code QR' }),
+        ligne('Couleur des modules', couleurModules),
+        ligne('Couleur du fond', couleurFond),
+        ligne('Marge', ...marge),
+        ligne('Forme des modules', f.liste(w, 'qr_forme', FORMES_QR)),
+        ligne('Logo central', logo),
+        images.length === 0 && f.aide("Envoyez une image dans les médias de la chaîne pour l'utiliser comme logo."),
+        Number.isInteger(w.logo) && f.aide("Avec un logo, le code utilise la correction d'erreur maximale (30 %) pour rester lisible."),
+        alerte,
+        f.aide('Vérifiez toujours le code avec un téléphone avant de le diffuser.'),
+        ...f.styleTexte(w),
+    ];
 }
 
 /** Widget Texte : mode (simple, Markdown, mise en forme) et saisie correspondante. */
@@ -214,10 +264,11 @@ function reglagesMedia(w, f, medias) {
         el('button', { type: 'button', class: 'mini', title: 'Retirer', text: '×', onclick: () => { w.elements.splice(i, 1); modifie(); } })));
 
     let ajout;
-    if (medias.length === 0) {
-        ajout = f.aide('Aucun média dans cette chaîne pour le moment.');
+    const insertables = medias.filter((m) => m.accessible !== false);
+    if (insertables.length === 0) {
+        ajout = f.aide('Aucun média disponible pour le moment.');
     } else {
-        const select = el('select', {}, medias.map((m) => el('option', { value: m.id, text: m.nom })));
+        const select = el('select', {}, insertables.map((m) => el('option', { value: m.id, text: m.nom })));
         ajout = el('div', { class: 'ajout-media' }, select, el('button', {
             type: 'button', class: 'bouton', text: 'Ajouter',
             onclick: () => {

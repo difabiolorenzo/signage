@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     nom VARCHAR(100) NOT NULL DEFAULT '',
     role ENUM('admin', 'editeur') NOT NULL DEFAULT 'editeur',
     actif TINYINT(1) NOT NULL DEFAULT 1,
+    version_session INT UNSIGNED NOT NULL DEFAULT 1,
     cree_le DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uq_utilisateurs_identifiant (identifiant)
@@ -46,21 +47,28 @@ CREATE TABLE IF NOT EXISTS droits (
 
 -- regions : liste de [x, y, largeur, hauteur] en fractions de l'écran.
 -- pages : document { "format": 1, "pages": [...] }, lu et écrit en bloc par PHP.
+-- valide_du / valide_au : période de diffusion (NULL = sans limite).
+-- auteur_id : seul à pouvoir la modifier avec les administrateurs. portee : « globale », ou
+-- « restreinte » aux chaînes et utilisateurs de playlist_acces (aucune entrée : privée).
+-- Une playlist passe sur une chaîne par la programmation de celle-ci (migration 005).
 CREATE TABLE IF NOT EXISTS playlists (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    chaine_id INT UNSIGNED NOT NULL,
     nom VARCHAR(100) NOT NULL,
     disposition VARCHAR(64) NOT NULL,
     regions JSON NOT NULL CHECK (JSON_VALID(regions)),
     pages JSON NOT NULL CHECK (JSON_VALID(pages)),
+    valide_du DATE NULL,
+    valide_au DATE NULL,
     modifie_le DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     modifie_par INT UNSIGNED NULL,
+    auteur_id INT UNSIGNED NULL,
+    portee ENUM('globale', 'restreinte') NOT NULL DEFAULT 'restreinte',
     PRIMARY KEY (id),
-    KEY ix_playlists_chaine (chaine_id),
     KEY ix_playlists_modifie_par (modifie_par),
-    CONSTRAINT fk_playlists_chaine FOREIGN KEY (chaine_id)
-        REFERENCES chaines (id) ON DELETE CASCADE,
+    KEY ix_playlists_auteur (auteur_id),
     CONSTRAINT fk_playlists_modifie_par FOREIGN KEY (modifie_par)
+        REFERENCES utilisateurs (id) ON DELETE SET NULL,
+    CONSTRAINT fk_playlists_auteur FOREIGN KEY (auteur_id)
         REFERENCES utilisateurs (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -84,10 +92,11 @@ CREATE TABLE IF NOT EXISTS programmations (
         REFERENCES playlists (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- duree en secondes (vidéos) ; largeur et hauteur en pixels.
+-- duree en secondes (vidéos) ; largeur et hauteur en pixels. envoye_par : qui a envoyé le
+-- fichier ; auteur_id : responsable actuel (transférable). portee : comme pour les playlists,
+-- mais elle dit qui peut insérer le média dans une playlist, pas où il s'affiche.
 CREATE TABLE IF NOT EXISTS medias (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    chaine_id INT UNSIGNED NOT NULL,
     fichier VARCHAR(64) NOT NULL,
     nom_origine VARCHAR(255) NOT NULL,
     type VARCHAR(64) NOT NULL,
@@ -97,14 +106,55 @@ CREATE TABLE IF NOT EXISTS medias (
     duree DECIMAL(10,3) NULL,
     envoye_par INT UNSIGNED NULL,
     envoye_le DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    auteur_id INT UNSIGNED NULL,
+    portee ENUM('globale', 'restreinte') NOT NULL DEFAULT 'restreinte',
     PRIMARY KEY (id),
     UNIQUE KEY uq_medias_fichier (fichier),
-    KEY ix_medias_chaine (chaine_id),
     KEY ix_medias_envoye_par (envoye_par),
-    CONSTRAINT fk_medias_chaine FOREIGN KEY (chaine_id)
-        REFERENCES chaines (id) ON DELETE CASCADE,
+    KEY ix_medias_auteur (auteur_id),
     CONSTRAINT fk_medias_envoye_par FOREIGN KEY (envoye_par)
+        REFERENCES utilisateurs (id) ON DELETE SET NULL,
+    CONSTRAINT fk_medias_auteur FOREIGN KEY (auteur_id)
         REFERENCES utilisateurs (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Portée restreinte d'une playlist ou d'un média (migration 005) : chaque entrée vise soit une
+-- chaîne, soit un utilisateur, l'autre colonne restant NULL (vérifié par PHP : MySQL refuse un
+-- CHECK sur une colonne de clé étrangère à action ON DELETE).
+CREATE TABLE IF NOT EXISTS playlist_acces (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    playlist_id INT UNSIGNED NOT NULL,
+    chaine_id INT UNSIGNED NULL,
+    utilisateur_id INT UNSIGNED NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_playlist_acces_chaine (playlist_id, chaine_id),
+    UNIQUE KEY uq_playlist_acces_utilisateur (playlist_id, utilisateur_id),
+    KEY ix_playlist_acces_chaine (chaine_id),
+    KEY ix_playlist_acces_utilisateur (utilisateur_id),
+    CONSTRAINT fk_playlist_acces_playlist FOREIGN KEY (playlist_id)
+        REFERENCES playlists (id) ON DELETE CASCADE,
+    CONSTRAINT fk_playlist_acces_chaine FOREIGN KEY (chaine_id)
+        REFERENCES chaines (id) ON DELETE CASCADE,
+    CONSTRAINT fk_playlist_acces_utilisateur FOREIGN KEY (utilisateur_id)
+        REFERENCES utilisateurs (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS media_acces (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    media_id INT UNSIGNED NOT NULL,
+    chaine_id INT UNSIGNED NULL,
+    utilisateur_id INT UNSIGNED NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_media_acces_chaine (media_id, chaine_id),
+    UNIQUE KEY uq_media_acces_utilisateur (media_id, utilisateur_id),
+    KEY ix_media_acces_chaine (chaine_id),
+    KEY ix_media_acces_utilisateur (utilisateur_id),
+    CONSTRAINT fk_media_acces_media FOREIGN KEY (media_id)
+        REFERENCES medias (id) ON DELETE CASCADE,
+    CONSTRAINT fk_media_acces_chaine FOREIGN KEY (chaine_id)
+        REFERENCES chaines (id) ON DELETE CASCADE,
+    CONSTRAINT fk_media_acces_utilisateur FOREIGN KEY (utilisateur_id)
+        REFERENCES utilisateurs (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Échecs de connexion récents (migration 001), purgés après un jour.
@@ -118,5 +168,13 @@ CREATE TABLE IF NOT EXISTS tentatives_connexion (
     KEY ix_tentatives_identifiant (identifiant, quand),
     KEY ix_tentatives_quand (quand)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Numéro de la dernière migration de sql/migrations/ intégrée à ce schéma (migration 004).
+-- À mettre à jour à chaque nouvelle migration.
+CREATE TABLE IF NOT EXISTS version_schema (
+    version INT UNSIGNED NOT NULL,
+    PRIMARY KEY (version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT INTO version_schema (version) SELECT 5 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM version_schema);
 
 SET FOREIGN_KEY_CHECKS = 1;

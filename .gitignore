@@ -3,3 +3,5 @@
 /config/config.php
 /public/uploads/*
 !/public/uploads/.htaccess
+/sauvegardes/*
+!/sauvegardes/.htaccess

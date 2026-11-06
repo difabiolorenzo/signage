@@ -1,10 +1,24 @@
-// Écran « Médias » d'une chaîne : envoi par glisser-déposer ou sélection de fichiers,
-// bibliothèque avec vignettes, suppression (refusée si une playlist utilise le média).
+// Menu « Médias » : médias de la bibliothèque visibles par l'utilisateur, filtrés par chaîne,
+// auteur, portée et type ; envoi par glisser-déposer ou sélection de fichiers (ouvert à la chaîne
+// du filtre, sinon privé) ; portée « utilisable par… » et suppression par l'auteur ou un
+// administrateur (suppression refusée si une playlist utilise le média).
 
 import { api, envoyerFichier } from './api.js';
+import { boutonsBibliotheque, filtres, optionsAuteurs, OPTIONS_PORTEE, textePortee } from './bibliotheque.js';
 import { confirmer } from './dialogue.js';
 import { dateCourte, duree, el } from './dom.js';
-import { ongletsChaine } from './navigation.js';
+import { ongletsAccueil } from './navigation.js';
+
+// Conservés pendant la session de l'éditeur.
+const valeurs = { chaine: '', auteur: '', portee: '', type: '' };
+
+function retenu(m) {
+    const chaine = Number(valeurs.chaine);
+    return (!chaine || m.acces.chaines.some((c) => c.id === chaine))
+        && (!valeurs.auteur || String(m.auteur?.id) === valeurs.auteur)
+        && (!valeurs.portee || m.portee === valeurs.portee)
+        && (!valeurs.type || m.type.startsWith(`${valeurs.type}/`));
+}
 
 function taille(octets) {
     if (octets >= 1024 * 1024) {
@@ -42,29 +56,33 @@ function vignette(media) {
     return el('img', { class: 'vignette-media', src: media.url, alt: '', loading: 'lazy' });
 }
 
-function carteMedia(media, chaineId, contexte, rafraichir) {
+function carteMedia(media, contexte, rafraichir) {
     const details = [
         media.largeur && media.hauteur ? `${media.largeur} × ${media.hauteur}` : null,
         taille(media.taille),
         media.duree ? duree(media.duree) : null,
     ].filter(Boolean).join(' · ');
-    const utilise = media.utilise_par.length > 0;
+    const utilise = media.utilise_par.length + media.utilise_par_autres > 0;
+    const utilisations = [...media.utilise_par, media.utilise_par_autres > 0 && `${media.utilise_par_autres} autre(s) playlist(s)`].filter(Boolean);
     return el('article', { class: 'carte-media' },
         el('div', { class: 'cadre-vignette' }, vignette(media),
             media.type.startsWith('video/') && el('span', { class: 'badge', text: 'Vidéo' })),
         el('p', { class: 'nom-fichier', title: media.nom, text: media.nom }),
         el('p', { class: 'meta', text: details }),
         el('p', { class: 'meta', text: `Envoyé le ${dateCourte(media.envoye_le)}${media.envoye_par ? ` par ${media.envoye_par}` : ''}` }),
-        el('p', { class: utilise ? 'meta utilise' : 'meta', text: utilise ? `Utilisé par : ${media.utilise_par.join(', ')}` : 'Utilisé par aucune playlist' }),
+        el('p', { class: 'meta', text: `Auteur : ${media.auteur?.nom ?? 'aucun'}` }),
+        el('p', { class: 'meta', text: `Utilisable par : ${textePortee(media)}` }),
+        el('p', { class: utilise ? 'meta utilise' : 'meta', text: utilise ? `Utilisé par : ${utilisations.join(', ')}` : 'Utilisé par aucune playlist' }),
         el('div', { class: 'actions' },
             el('a', { class: 'bouton', href: media.url, target: '_blank', rel: 'noopener', text: 'Ouvrir' }),
-            el('button', {
+            boutonsBibliotheque('medias', media, contexte, rafraichir),
+            media.modifiable && el('button', {
                 type: 'button', class: 'bouton danger', text: 'Supprimer', disabled: utilise,
                 title: utilise ? 'Retirez d\'abord ce média des playlists qui l\'utilisent.' : null,
                 onclick: async () => {
                     if (await confirmer('Supprimer le média', `« ${media.nom} » sera supprimé définitivement.`)) {
                         try {
-                            await api.supprimer(`/chaines/${chaineId}/medias/${media.id}`);
+                            await api.supprimer(`/medias/${media.id}`);
                             contexte.notifier(`« ${media.nom} » supprimé.`);
                         } catch (e) {
                             contexte.notifier(e.message);
@@ -75,25 +93,41 @@ function carteMedia(media, chaineId, contexte, rafraichir) {
             })));
 }
 
-export async function afficher(ecran, contexte, chaineId) {
-    const [{ chaine }, bibliotheque] = await Promise.all([
-        api.get(`/chaines/${chaineId}`),
-        api.get(`/chaines/${chaineId}/medias`),
-    ]);
-    document.title = `Médias — ${chaine.nom} — Signage Studio`;
-    const { medias, taille_max: tailleMax, types } = bibliotheque;
+/** chaineId : filtre « chaîne » imposé à l'ouverture (ancienne adresse #/chaines/{id}/medias). */
+export async function afficher(ecran, contexte, chaineId = null) {
+    if (chaineId !== null) {
+        valeurs.chaine = String(chaineId);
+    }
+    const [bibliotheque, { chaines }] = await Promise.all([api.get('/medias'), api.get('/chaines')]);
+    document.title = 'Médias — Signage Studio';
+    let { medias } = bibliotheque;
+    const { taille_max: tailleMax, types } = bibliotheque;
+    if (valeurs.chaine && !chaines.some((c) => String(c.id) === valeurs.chaine)) {
+        valeurs.chaine = '';
+    }
 
     const grille = el('div', { class: 'grille-medias' });
     const suivi = el('ul', { class: 'suivi-envois', 'aria-live': 'polite' });
+    const compte = el('p', { class: 'meta', 'aria-live': 'polite' });
+    const destination = el('p', { class: 'aide' });
 
-    async function rafraichirListe() {
-        const r = await api.get(`/chaines/${chaineId}/medias`);
-        dessinerListe(r.medias);
+    async function rafraichirListe(message) {
+        medias = (await api.get('/medias')).medias;
+        dessinerListe();
+        if (message) {
+            contexte.notifier(message);
+        }
     }
-    function dessinerListe(liste) {
-        grille.replaceChildren(...(liste.length === 0
-            ? [el('p', { class: 'vide', text: 'Aucun média pour le moment. Déposez des images ou des vidéos ci-dessus.' })]
-            : liste.map((m) => carteMedia(m, chaineId, contexte, rafraichirListe))));
+    function dessinerListe() {
+        const retenus = medias.filter(retenu);
+        const chaine = chaines.find((c) => String(c.id) === valeurs.chaine);
+        destination.textContent = chaine
+            ? `Les fichiers envoyés seront utilisables par les éditeurs de la chaîne « ${chaine.nom} ».`
+            : 'Les fichiers envoyés seront privés (vous et les administrateurs) ; choisissez une chaîne dans le filtre pour les lui ouvrir, ou réglez ensuite leur portée.';
+        compte.textContent = `${retenus.length} média(s) sur ${medias.length}`;
+        grille.replaceChildren(...(retenus.length === 0
+            ? [el('p', { class: 'vide', text: medias.length === 0 ? 'Aucun média pour le moment. Déposez des images ou des vidéos ci-dessus.' : 'Aucun média ne correspond à ces filtres.' })]
+            : retenus.map((m) => carteMedia(m, contexte, rafraichirListe))));
     }
 
     /** Envoie les fichiers un par un, avec une ligne de suivi chacun. */
@@ -120,6 +154,9 @@ export async function afficher(ecran, contexte, chaineId) {
             }
             const donnees = new FormData();
             donnees.append('fichier', fichier);
+            if (valeurs.chaine) {
+                donnees.append('chaine', valeurs.chaine);
+            }
             if (fichier.type.startsWith('video/')) {
                 const mesures = await mesurerVideo(fichier);
                 for (const [cle, valeur] of Object.entries(mesures)) {
@@ -130,7 +167,7 @@ export async function afficher(ecran, contexte, chaineId) {
             }
             etat.textContent = 'Envoi…';
             try {
-                await envoyerFichier(`/chaines/${chaineId}/medias`, donnees, (fraction) => {
+                await envoyerFichier('/medias', donnees, (fraction) => {
                     barre.value = fraction;
                 });
                 barre.remove();
@@ -181,13 +218,20 @@ export async function afficher(ecran, contexte, chaineId) {
         window.removeEventListener('drop', ignorerDepot);
     });
 
-    dessinerListe(medias);
+    const barreFiltres = filtres([
+        { cle: 'chaine', libelle: 'Chaîne', options: [['', 'Toutes'], ...chaines.map((c) => [String(c.id), c.nom])] },
+        { cle: 'auteur', libelle: 'Auteur', options: optionsAuteurs(medias) },
+        { cle: 'portee', libelle: 'Portée', options: OPTIONS_PORTEE },
+        { cle: 'type', libelle: 'Type', options: [['', 'Tous'], ['image', 'Images'], ['video', 'Vidéos']] },
+    ], valeurs, dessinerListe);
+
+    dessinerListe();
     ecran.replaceChildren(contexte.cadre({
-        ...ongletsChaine(chaine, 'medias'),
+        ...ongletsAccueil(contexte, 'medias'),
         barre: [
             el('h1', { text: 'Médias' }),
             el('button', { type: 'button', class: 'bouton principal', text: '+ Envoyer des fichiers', onclick: () => choixFichiers.click() }),
         ],
-        contenu: [depot, choixFichiers, suivi, grille],
+        contenu: [barreFiltres, depot, destination, choixFichiers, suivi, compte, grille],
     }));
 }

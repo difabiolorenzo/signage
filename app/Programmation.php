@@ -8,6 +8,8 @@ declare(strict_types=1);
  * (NULL = sans limite) et l'heure dans [heure_debut, heure_fin[. Entre plages qui s'appliquent,
  * la plus forte priorité l'emporte, puis la plus ancienne. Sans plage : playlist par défaut.
  * Une plage ne passe pas minuit (heure_fin après heure_debut) ; « jusqu'à minuit » s'écrit 24:00:00.
+ * Une playlist hors de sa période de validité (valide_du / valide_au) n'est jamais choisie, ni par
+ * une plage ni comme playlist par défaut : la plage suivante en priorité prend alors le relais.
  */
 final class Programmation
 {
@@ -17,8 +19,10 @@ final class Programmation
     /**
      * @param list<array{playlist_id: int|string, date_debut: ?string, date_fin: ?string,
      *     heure_debut: string, heure_fin: string, jours: int|string, priorite: int|string}> $plages
+     * @param array<int, array{0: ?string, 1: ?string}> $validites période [du, au] par playlist ;
+     *     une playlist absente est valide sans limite
      */
-    public function __construct(private array $plages, private ?int $playlistDefaut)
+    public function __construct(private array $plages, private ?int $playlistDefaut, private array $validites = [])
     {
         usort($this->plages, static fn (array $a, array $b): int => (int) $b['priorite'] <=> (int) $a['priorite']);
     }
@@ -35,12 +39,35 @@ final class Programmation
                 || ($p['date_debut'] !== null && $date < $p['date_debut'])
                 || ($p['date_fin'] !== null && $date > $p['date_fin'])
                 || $heure < self::heure($p['heure_debut'])
-                || $heure >= self::heure($p['heure_fin'])) {
+                || $heure >= self::heure($p['heure_fin'])
+                || !$this->valide((int) $p['playlist_id'], $date)) {
                 continue;
             }
             return (int) $p['playlist_id'];
         }
-        return $this->playlistDefaut;
+        return $this->playlistDefaut !== null && $this->valide($this->playlistDefaut, $date) ? $this->playlistDefaut : null;
+    }
+
+    /** La playlist peut-elle passer à la date $date (AAAA-MM-JJ) ? */
+    public function valide(int $playlistId, string $date): bool
+    {
+        [$du, $au] = $this->validites[$playlistId] ?? [null, null];
+        return ($du === null || $date >= $du) && ($au === null || $date <= $au);
+    }
+
+    /** Périodes de validité des playlists programmées sur une chaîne, pour le constructeur. */
+    public static function validitesChaine(int $chaineId): array
+    {
+        $validites = [];
+        $ids = Bibliotheque::playlistsProgrammees($chaineId);
+        if ($ids === []) {
+            return [];
+        }
+        $marques = implode(', ', array_fill(0, count($ids), '?'));
+        foreach (Db::lignes("SELECT id, valide_du, valide_au FROM playlists WHERE id IN ($marques)", $ids) as $p) {
+            $validites[(int) $p['id']] = [$p['valide_du'], $p['valide_au']];
+        }
+        return $validites;
     }
 
     /**

@@ -7,7 +7,8 @@ import { champ, confirmer, dialogue } from './dialogue.js';
 import { dateCourte, el } from './dom.js';
 import { ongletsAccueil } from './navigation.js';
 
-const MOT_DE_PASSE_MIN = 10;
+/** Même valeur que ControleurUtilisateurs::MOT_DE_PASSE_MIN. */
+export const MOT_DE_PASSE_MIN = 10;
 
 /** Mot de passe aléatoire de 14 caractères, sans caractères faciles à confondre (0/O, 1/l/I). */
 function motDePasseAleatoire() {
@@ -118,8 +119,29 @@ function choisirChaines(u, chaines) {
                 : el('div', { class: 'liste-cases' }, chaines.map((c, i) => el('label', { class: 'case' }, cases[i].entree, ` ${c.nom}`, el('small', { text: ` ?chaine=${c.slug}` })))),
         ],
         valider: async () => {
-            await api.put(`/utilisateurs/${u.id}/droits`, { chaines: cases.filter((c) => c.entree.checked).map((c) => c.id) });
+            const r = await api.put(`/utilisateurs/${u.id}/droits`, { chaines: cases.filter((c) => c.entree.checked).map((c) => c.id) });
+            if (r.avertissement) {
+                alert(r.avertissement);
+            }
             return true;
+        },
+    });
+}
+
+/** Fenêtre « Transférer ses playlists et médias » vers un autre utilisateur actif. */
+function transferer(u, utilisateurs) {
+    const vers = el('select', {}, utilisateurs.filter((x) => x.actif && x.id !== u.id)
+        .map((x) => el('option', { value: x.id, text: `${x.nom || x.identifiant} (${x.identifiant})` })));
+    return dialogue({
+        titre: `Transférer les playlists et médias de ${u.nom || u.identifiant}`,
+        texteValider: 'Transférer',
+        corps: [
+            el('p', { text: 'Toutes les playlists et tous les médias dont cet utilisateur est l\'auteur passeront à :' }),
+            champ('Nouvel auteur', vers),
+        ],
+        valider: async () => {
+            const r = await api.post(`/utilisateurs/${u.id}/transfert`, { vers: Number(vers.value) });
+            return `${r.playlists} playlist(s) et ${r.medias} média(s) transféré(s).`;
         },
     });
 }
@@ -172,6 +194,7 @@ export async function afficher(ecran, contexte) {
             el('td', { class: 'actions-ligne' },
                 action('Modifier', () => modifierUtilisateur(u, estMoi), 'Utilisateur enregistré.'),
                 u.role !== 'admin' && action('Chaînes…', () => choisirChaines(u, chaines), 'Droits enregistrés.'),
+                !estMoi && action('Transférer…', () => transferer(u, utilisateurs), 'Playlists et médias transférés.'),
                 action('Mot de passe…', () => nouveauMotDePasse(u), `Mot de passe de ${u.identifiant} changé.`),
                 basculer));
     });

@@ -2,8 +2,10 @@
 declare(strict_types=1);
 
 /**
- * Playlists d'une chaîne (droit sur la chaîne requis). Toute modification incrémente la
- * version de la chaîne, ce qui fait recharger l'affichage des lecteurs.
+ * Playlists de la bibliothèque partagée. Visibles et modifiables selon Droits (auteur,
+ * administrateurs, portée) ; une playlist passe sur une chaîne par la programmation de celle-ci.
+ * Toute modification incrémente la version des chaînes qui la programment, ce qui fait
+ * recharger l'affichage de leurs lecteurs.
  */
 final class ControleurPlaylists
 {
@@ -17,54 +19,117 @@ final class ControleurPlaylists
         return str_starts_with($disposition, 'Portrait') || $disposition === 'Personnalisé portrait';
     }
 
-    /**
-     * GET /api/chaines/{id}/playlists/{pid} : la playlist complète pour l'éditeur de pages,
-     * avec les médias de la chaîne (nom, type, URL) pour l'aperçu et le choix des médias.
-     */
-    public static function lire(int $chaineId, int $playlistId): never
+    public static function orientation(string $disposition): string
     {
-        Droits::exigerChaine(Auth::exigerConnexion(), $chaineId);
-        $p = Db::ligne(
-            "SELECT p.id, p.nom, p.disposition, p.regions, p.pages, p.modifie_le,
-                    COALESCE(NULLIF(u.nom, ''), u.identifiant) AS modifie_par
-             FROM playlists p LEFT JOIN utilisateurs u ON u.id = p.modifie_par
-             WHERE p.id = ? AND p.chaine_id = ?",
-            [$playlistId, $chaineId]
-        ) ?? Reponse::erreur('Playlist introuvable.', 404);
+        return self::estPortrait($disposition) ? 'portrait' : 'paysage';
+    }
 
-        $base = (string) Config::get('url_base') . '/uploads/';
-        $medias = array_map(static fn (array $m): array => [
-            'id' => (int) $m['id'],
-            'nom' => $m['nom_origine'],
-            'type' => $m['type'],
-            'url' => $base . rawurlencode($m['fichier']),
-        ], Db::lignes('SELECT id, nom_origine, type, fichier FROM medias WHERE chaine_id = ? ORDER BY nom_origine', [$chaineId]));
+    /**
+     * GET /api/playlists?chaine=&programmable=&auteur=&portee=&orientation= : playlists visibles.
+     * chaine : celles ouvertes à cette chaîne ou programmées sur elle ; programmable : celles que
+     * l'utilisateur peut ajouter à la programmation de cette chaîne ; portee : globale, restreinte
+     * ou privee (restreinte sans aucun accès) ; orientation : paysage ou portrait.
+     */
+    public static function liste(): never
+    {
+        $u = Auth::exigerConnexion();
+        $chaine = self::filtreId('chaine');
+        $programmable = self::filtreId('programmable');
+        $auteur = self::filtreId('auteur');
+        $portee = $_GET['portee'] ?? null;
+        $orientation = $_GET['orientation'] ?? null;
+        foreach (array_filter([$chaine, $programmable]) as $c) {
+            Droits::exigerChaine($u, $c);
+        }
 
+        [$visible, $params] = Droits::sqlVisible('playlist', $u);
+        $lignes = Db::lignes(
+            'SELECT o.id, o.nom, o.disposition, o.regions, o.pages, o.valide_du, o.valide_au, o.modifie_le,
+                    o.auteur_id, o.portee, ' . Bibliotheque::sqlNom('m') . ' AS modifie_par, ' . Bibliotheque::sqlNom('a') . " AS auteur
+             FROM playlists o
+             LEFT JOIN utilisateurs m ON m.id = o.modifie_par
+             LEFT JOIN utilisateurs a ON a.id = o.auteur_id
+             WHERE $visible ORDER BY o.nom, o.id",
+            $params
+        );
+        $ids = array_map(static fn (array $p): int => (int) $p['id'], $lignes);
+        $acces = Bibliotheque::acces('playlist', $ids);
+        $programmant = Bibliotheque::chainesProgrammant($ids);
+        $noms = Bibliotheque::noms($acces);
+        $defaut = $chaine === null ? null : Db::valeur('SELECT playlist_defaut_id FROM chaines WHERE id = ?', [$chaine]);
+
+        $playlists = [];
+        foreach ($lignes as $p) {
+            $id = (int) $p['id'];
+            $a = $acces[$id];
+            $utilisee = $programmant[$id] ?? [];
+            if (($chaine !== null && !in_array($chaine, $a['chaines'], true) && !isset($utilisee[$chaine]))
+                || ($programmable !== null && !isset($utilisee[$programmable]) && !Droits::peutProgrammer($u, $p, $a, $programmable))
+                || ($auteur !== null && (int) $p['auteur_id'] !== $auteur)
+                || ($portee !== null && $portee !== self::porteeAffichee($p['portee'], $a))
+                || ($orientation !== null && $orientation !== self::orientation($p['disposition']))) {
+                continue;
+            }
+            $pages = Pages::lire((string) $p['pages'], $id);
+            $playlists[] = self::publier($p, $a, $noms, $utilisee, $u) + [
+                'regions' => json_decode((string) $p['regions'], true) ?: [],
+                'nb_pages' => count($pages),
+                'duree' => array_sum(array_map(static fn ($pg): int => (int) ($pg['duree'] ?? 0), $pages)),
+                'par_defaut' => $defaut !== null && (int) $defaut === $id,
+            ];
+        }
+        Reponse::json(['playlists' => $playlists]);
+    }
+
+    /**
+     * GET /api/playlists/{id} : la playlist complète pour l'éditeur de pages, avec les médias que
+     * l'utilisateur peut insérer et ceux qu'elle utilise déjà (accessible: false s'il ne les voit pas).
+     */
+    public static function lire(int $playlistId): never
+    {
+        $u = Auth::exigerConnexion();
+        $p = Droits::exigerObjet($u, 'playlist', $playlistId, 'voir');
+        $pages = Pages::lire((string) $p['pages'], $playlistId);
+        $infos = Db::ligne(
+            'SELECT ' . Bibliotheque::sqlNom('m') . ' AS modifie_par, ' . Bibliotheque::sqlNom('a') . ' AS auteur
+             FROM playlists o LEFT JOIN utilisateurs m ON m.id = o.modifie_par LEFT JOIN utilisateurs a ON a.id = o.auteur_id
+             WHERE o.id = ?',
+            [$playlistId]
+        );
+
+        $visibles = ControleurMedias::visibles($u);
+        $utilises = Pages::medias($pages);
+        $manquants = array_values(array_diff($utilises, array_keys($visibles)));
+        $medias = array_map(static fn (array $m): array => $m + ['accessible' => true], array_values($visibles));
+        if ($manquants !== []) {
+            $marques = implode(', ', array_fill(0, count($manquants), '?'));
+            foreach (Db::lignes("SELECT id, nom_origine, type, fichier FROM medias WHERE id IN ($marques)", $manquants) as $m) {
+                $medias[] = ControleurMedias::resume($m) + ['accessible' => false];
+            }
+        }
+
+        $noms = Bibliotheque::noms([$p['acces']]);
+        $utilisee = Bibliotheque::chainesProgrammant([$playlistId])[$playlistId] ?? [];
         Reponse::json([
-            'playlist' => [
-                'id' => (int) $p['id'],
-                'nom' => $p['nom'],
-                'disposition' => $p['disposition'],
+            'playlist' => self::publier($infos + $p,$p['acces'], $noms, $utilisee, $u) + [
                 'portrait' => self::estPortrait($p['disposition']),
                 'regions' => json_decode((string) $p['regions'], true) ?: [],
-                'pages' => Pages::lire((string) $p['pages'], (int) $p['id']),
-                'modifie_le' => $p['modifie_le'],
-                'modifie_par' => $p['modifie_par'],
+                'pages' => $pages,
             ],
             'medias' => $medias,
         ]);
     }
 
     /**
-     * PUT /api/chaines/{id}/playlists/{pid} { nom, pages, disposition?, regions? } : disposition
-     * et régions sont envoyées ensemble quand la grille change ; les pages ont alors un widget
-     * par nouvelle région. Règles vérifiées par Pages::verifier (au moins une page, un YouTube par page…).
+     * PUT /api/playlists/{id} { nom, pages, disposition?, regions?, valide_du?, valide_au? } :
+     * disposition et régions sont envoyées ensemble quand la grille change ; les pages ont alors un
+     * widget par nouvelle région. Période de validité : dates AAAA-MM-JJ ou null (sans limite).
+     * Règles vérifiées par Pages::verifier (au moins une page, un YouTube par page…).
      */
-    public static function enregistrer(int $chaineId, int $playlistId): never
+    public static function enregistrer(int $playlistId): never
     {
         $u = Auth::exigerConnexion();
-        Droits::exigerChaine($u, $chaineId);
-        $p = self::trouver($chaineId, $playlistId);
+        $p = Droits::exigerObjet($u, 'playlist', $playlistId, 'modifier');
         $corps = Requete::json();
         $nom = self::nom($corps['nom'] ?? null);
         $disposition = $p['disposition'];
@@ -73,54 +138,42 @@ final class ControleurPlaylists
             $disposition = self::disposition($corps['disposition'] ?? null);
             $regions = self::regions($corps['regions'] ?? null);
         }
-        $medias = array_map('intval', array_column(Db::lignes('SELECT id FROM medias WHERE chaine_id = ?', [$chaineId]), 'id'));
-        $pages = Pages::verifier($corps['pages'] ?? null, count($regions), $medias);
+        if (self::orientation($disposition) !== self::orientation($p['disposition'])) {
+            self::verifierOrientation($playlistId, self::orientation($disposition));
+        }
+        $validiteDu = array_key_exists('valide_du', $corps) ? self::date($corps['valide_du'], 'Début de la période') : $p['valide_du'];
+        $validiteAu = array_key_exists('valide_au', $corps) ? self::date($corps['valide_au'], 'Fin de la période') : $p['valide_au'];
+        if ($validiteDu !== null && $validiteAu !== null && $validiteAu < $validiteDu) {
+            Reponse::erreur('La fin de la période précède son début.', 400);
+        }
+        // Médias autorisés : ceux que l'utilisateur voit, et ceux que la playlist utilisait déjà
+        // (insérés par quelqu'un qui y avait accès).
+        $autorises = array_values(array_unique(array_merge(
+            array_keys(ControleurMedias::visibles($u)),
+            Pages::medias(Pages::lire((string) $p['pages'], $playlistId))
+        )));
+        $pages = Pages::verifier($corps['pages'] ?? null, count($regions), $autorises);
 
-        Db::transaction(static function () use ($chaineId, $playlistId, $nom, $disposition, $regions, $pages, $u): void {
+        Db::transaction(static function () use ($playlistId, $nom, $disposition, $regions, $pages, $validiteDu, $validiteAu, $u): void {
             Db::executer(
-                'UPDATE playlists SET nom = ?, disposition = ?, regions = ?, pages = ?, modifie_par = ? WHERE id = ? AND chaine_id = ?',
-                [$nom, $disposition, json_encode($regions), Pages::document($pages), $u['id'], $playlistId, $chaineId]
+                'UPDATE playlists SET nom = ?, disposition = ?, regions = ?, pages = ?, valide_du = ?, valide_au = ?, modifie_par = ?
+                 WHERE id = ?',
+                [$nom, $disposition, json_encode($regions), Pages::document($pages), $validiteDu, $validiteAu, $u['id'], $playlistId]
             );
-            self::chaineModifiee($chaineId);
+            Bibliotheque::chainesModifiees($playlistId);
         });
         Reponse::json(['ok' => true]);
     }
 
-    /** GET /api/chaines/{id}/playlists */
-    public static function liste(int $chaineId): never
-    {
-        Droits::exigerChaine(Auth::exigerConnexion(), $chaineId);
-        $defaut = Db::valeur('SELECT playlist_defaut_id FROM chaines WHERE id = ?', [$chaineId]);
-        $lignes = Db::lignes(
-            "SELECT p.id, p.nom, p.disposition, p.regions, p.pages, p.modifie_le,
-                    COALESCE(NULLIF(u.nom, ''), u.identifiant) AS modifie_par
-             FROM playlists p LEFT JOIN utilisateurs u ON u.id = p.modifie_par
-             WHERE p.chaine_id = ? ORDER BY p.nom, p.id",
-            [$chaineId]
-        );
-        $playlists = array_map(static function (array $p) use ($defaut): array {
-            $pages = Pages::lire((string) $p['pages'], (int) $p['id']);
-            return [
-                'id' => (int) $p['id'],
-                'nom' => $p['nom'],
-                'disposition' => $p['disposition'],
-                'regions' => json_decode((string) $p['regions'], true) ?: [],
-                'nb_pages' => count($pages),
-                'duree' => array_sum(array_map(static fn ($pg): int => (int) ($pg['duree'] ?? 0), $pages)),
-                'par_defaut' => $defaut !== null && (int) $defaut === (int) $p['id'],
-                'modifie_le' => $p['modifie_le'],
-                'modifie_par' => $p['modifie_par'],
-            ];
-        }, $lignes);
-        Reponse::json(['playlists' => $playlists]);
-    }
-
-    /** POST /api/chaines/{id}/playlists { nom, disposition, regions } : une page de widgets vides. */
-    public static function creer(int $chaineId): never
+    /**
+     * POST /api/playlists { nom, disposition, regions, chaine? } : une page de widgets vides.
+     * Avec chaine (où l'utilisateur a un droit) : restreinte à cette chaîne ; sinon privée.
+     */
+    public static function creer(): never
     {
         $u = Auth::exigerConnexion();
-        Droits::exigerChaine($u, $chaineId);
         $corps = Requete::json();
+        $chaine = self::chaineCible($u, $corps['chaine'] ?? null);
         $nom = self::nom($corps['nom'] ?? null);
         $disposition = self::disposition($corps['disposition'] ?? null);
         $regions = self::regions($corps['regions'] ?? null);
@@ -129,59 +182,137 @@ final class ControleurPlaylists
             'fond' => '#000000',
             'widgets' => array_fill(0, count($regions), ['type' => 'vide']),
         ]];
-        $id = Db::transaction(static function () use ($chaineId, $nom, $disposition, $regions, $pages, $u): int {
+        $id = Db::transaction(static function () use ($chaine, $nom, $disposition, $regions, $pages, $u): int {
             Db::executer(
-                'INSERT INTO playlists (chaine_id, nom, disposition, regions, pages, modifie_par) VALUES (?, ?, ?, ?, ?, ?)',
-                [$chaineId, $nom, $disposition, json_encode($regions), Pages::document($pages), $u['id']]
+                'INSERT INTO playlists (nom, disposition, regions, pages, modifie_par, auteur_id) VALUES (?, ?, ?, ?, ?, ?)',
+                [$nom, $disposition, json_encode($regions), Pages::document($pages), $u['id'], $u['id']]
             );
             $id = Db::dernierId();
-            self::chaineModifiee($chaineId);
+            Bibliotheque::ecrireAcces('playlist', $id, $chaine === null ? [] : [$chaine], []);
             return $id;
         });
         Reponse::json(['id' => $id], 201);
     }
 
-    /** POST /api/chaines/{id}/playlists/{pid}/duplication { nom? } */
-    public static function dupliquer(int $chaineId, int $playlistId): never
+    /** POST /api/playlists/{id}/duplication { nom?, chaine? } : copie dont on est l'auteur, portée comme à la création. */
+    public static function dupliquer(int $playlistId): never
     {
         $u = Auth::exigerConnexion();
-        Droits::exigerChaine($u, $chaineId);
-        $p = self::trouver($chaineId, $playlistId);
+        $p = Droits::exigerObjet($u, 'playlist', $playlistId, 'voir');
         $corps = Requete::json();
+        $chaine = self::chaineCible($u, $corps['chaine'] ?? null);
         $nom = isset($corps['nom']) ? self::nom($corps['nom']) : mb_substr($p['nom'], 0, 92) . ' (copie)';
-        $id = Db::transaction(static function () use ($chaineId, $nom, $p, $u): int {
+        $id = Db::transaction(static function () use ($chaine, $nom, $p, $u): int {
             Db::executer(
-                'INSERT INTO playlists (chaine_id, nom, disposition, regions, pages, modifie_par) VALUES (?, ?, ?, ?, ?, ?)',
-                [$chaineId, $nom, $p['disposition'], $p['regions'], $p['pages'], $u['id']]
+                'INSERT INTO playlists (nom, disposition, regions, pages, valide_du, valide_au, modifie_par, auteur_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [$nom, $p['disposition'], $p['regions'], $p['pages'], $p['valide_du'], $p['valide_au'], $u['id'], $u['id']]
             );
             $id = Db::dernierId();
-            self::chaineModifiee($chaineId);
+            Bibliotheque::ecrireAcces('playlist', $id, $chaine === null ? [] : [$chaine], []);
             return $id;
         });
         Reponse::json(['id' => $id], 201);
     }
 
-    /** DELETE /api/chaines/{id}/playlists/{pid} : ses plages de programmation partent avec elle. */
-    public static function supprimer(int $chaineId, int $playlistId): never
+    /**
+     * DELETE /api/playlists/{id}[?confirmer=1] : ses plages de programmation partent avec elle.
+     * Programmée sur une chaîne que l'utilisateur ne gère pas : refusé (409). Programmée ailleurs
+     * seulement sur ses chaînes : 409 avec details.confirmation tant que confirmer=1 n'est pas passé.
+     */
+    public static function supprimer(int $playlistId): never
     {
-        Droits::exigerChaine(Auth::exigerConnexion(), $chaineId);
-        self::trouver($chaineId, $playlistId);
-        Db::transaction(static function () use ($chaineId, $playlistId): void {
-            Db::executer('DELETE FROM playlists WHERE id = ? AND chaine_id = ?', [$playlistId, $chaineId]);
-            self::chaineModifiee($chaineId);
+        $u = Auth::exigerConnexion();
+        Droits::exigerObjet($u, 'playlist', $playlistId, 'modifier');
+        $chaines = Bibliotheque::chainesProgrammant([$playlistId])[$playlistId] ?? [];
+        if ($chaines !== []) {
+            $liste = implode(', ', $chaines);
+            $horsDroits = array_filter(array_keys($chaines), static fn (int $c): bool => !Droits::peutModifier($u, $c));
+            if ($horsDroits !== []) {
+                Reponse::erreur("Cette playlist est programmée sur des chaînes que vous ne gérez pas ($liste) : demandez à leurs éditeurs ou à un administrateur de l'en retirer.", 409);
+            }
+            if (($_GET['confirmer'] ?? null) !== '1') {
+                Reponse::erreur("Cette playlist est programmée sur : $liste.", 409, ['confirmation' => true, 'chaines' => array_values($chaines)]);
+            }
+        }
+        Db::transaction(static function () use ($playlistId, $chaines): void {
+            if ($chaines !== []) {
+                $marques = implode(', ', array_fill(0, count($chaines), '?'));
+                Db::executer("UPDATE chaines SET version = version + 1 WHERE id IN ($marques)", array_keys($chaines));
+            }
+            Db::executer('DELETE FROM playlists WHERE id = ?', [$playlistId]);
         });
         Reponse::json(['ok' => true]);
     }
 
-    private static function trouver(int $chaineId, int $playlistId): array
+    /**
+     * Champs communs à la liste et au détail.
+     *
+     * @param array<int, string> $utilisee chaînes qui programment la playlist
+     */
+    private static function publier(array $p, array $acces, array $noms, array $utilisee, array $u): array
     {
-        return Db::ligne('SELECT nom, disposition, regions, pages FROM playlists WHERE id = ? AND chaine_id = ?', [$playlistId, $chaineId])
-            ?? Reponse::erreur('Playlist introuvable.', 404);
+        return [
+            'id' => (int) $p['id'],
+            'nom' => $p['nom'],
+            'disposition' => $p['disposition'],
+            'orientation' => self::orientation($p['disposition']),
+            'valide_du' => $p['valide_du'],
+            'valide_au' => $p['valide_au'],
+            'modifie_le' => $p['modifie_le'],
+            'modifie_par' => $p['modifie_par'],
+            'auteur' => $p['auteur_id'] === null ? null : ['id' => (int) $p['auteur_id'], 'nom' => $p['auteur']],
+            'portee' => self::porteeAffichee($p['portee'], $acces),
+            'acces' => Bibliotheque::accesPublies($acces, $noms),
+            'utilisee_par' => array_map(static fn (int $id, string $nom): array => ['id' => $id, 'nom' => $nom], array_keys($utilisee), $utilisee),
+            'modifiable' => Droits::peutModifierObjet($u, $p),
+        ];
     }
 
-    private static function chaineModifiee(int $chaineId): void
+    /** « globale », « restreinte », ou « privee » (restreinte sans aucun accès). */
+    public static function porteeAffichee(string $portee, array $acces): string
     {
-        Db::executer('UPDATE chaines SET version = version + 1 WHERE id = ?', [$chaineId]);
+        return $portee === 'restreinte' && $acces['chaines'] === [] && $acces['utilisateurs'] === [] ? 'privee' : $portee;
+    }
+
+    /** Refus (409) si la playlist est programmée sur une chaîne d'une autre orientation que $orientation. */
+    private static function verifierOrientation(int $playlistId, string $orientation): void
+    {
+        $chaines = array_keys(Bibliotheque::chainesProgrammant([$playlistId])[$playlistId] ?? []);
+        if ($chaines === []) {
+            return;
+        }
+        $marques = implode(', ', array_fill(0, count($chaines), '?'));
+        $autres = array_column(Db::lignes("SELECT nom FROM chaines WHERE orientation <> ? AND id IN ($marques) ORDER BY nom", [$orientation, ...$chaines]), 'nom');
+        if ($autres !== []) {
+            Reponse::erreur('Cette playlist est programmée sur des chaînes en ' . ($orientation === 'portrait' ? 'paysage' : 'portrait')
+                . ' (' . implode(', ', $autres) . ') : retirez-la de leur programmation avant de changer d\'orientation.', 409);
+        }
+    }
+
+    /** Chaîne demandée à la création ou à la duplication : null, ou une chaîne où l'utilisateur a un droit. */
+    private static function chaineCible(array $u, mixed $valeur): ?int
+    {
+        if ($valeur === null) {
+            return null;
+        }
+        if (!is_int($valeur)) {
+            Reponse::erreur('chaine : identifiant attendu.', 400);
+        }
+        Droits::exigerChaine($u, $valeur);
+        return $valeur;
+    }
+
+    private static function filtreId(string $nom): ?int
+    {
+        $valeur = $_GET[$nom] ?? null;
+        if ($valeur === null || $valeur === '') {
+            return null;
+        }
+        if (!is_string($valeur) || !preg_match('/^[1-9][0-9]{0,9}$/', $valeur)) {
+            Reponse::erreur("Filtre $nom : identifiant attendu.", 400);
+        }
+        return (int) $valeur;
     }
 
     private static function nom(mixed $valeur): string
@@ -191,6 +322,19 @@ final class ControleurPlaylists
             Reponse::erreur('Nom de la playlist : 1 à 100 caractères.', 400);
         }
         return $nom;
+    }
+
+    /** Date AAAA-MM-JJ, ou null pour « sans limite ». */
+    private static function date(mixed $valeur, string $libelle): ?string
+    {
+        if ($valeur === null || $valeur === '') {
+            return null;
+        }
+        $d = is_string($valeur) ? DateTimeImmutable::createFromFormat('!Y-m-d', $valeur) : false;
+        if ($d === false || $d->format('Y-m-d') !== $valeur) {
+            Reponse::erreur("$libelle : date invalide (AAAA-MM-JJ attendu).", 400);
+        }
+        return $valeur;
     }
 
     private static function disposition(mixed $valeur): string

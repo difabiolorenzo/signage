@@ -2,9 +2,10 @@
 declare(strict_types=1);
 
 /**
- * Médias d'une chaîne (droit sur la chaîne requis). Le type réel du fichier est vérifié avec
- * finfo, le fichier est enregistré sous un nom aléatoire dans public/uploads/ (où PHP ne
- * s'exécute pas), et un média utilisé par une playlist ne peut pas être supprimé.
+ * Médias de la bibliothèque partagée. Leur portée dit qui peut les insérer dans une playlist, pas
+ * où ils s'affichent : un média inséré passe partout où passe la playlist. Le type réel du fichier
+ * est vérifié avec finfo, le fichier est enregistré sous un nom aléatoire dans public/uploads/ (où
+ * PHP ne s'exécute pas), et un média utilisé par une playlist ne peut pas être supprimé.
  */
 final class ControleurMedias
 {
@@ -18,30 +19,94 @@ final class ControleurMedias
         'video/webm' => 'webm',
     ];
 
-    /** GET /api/chaines/{id}/medias */
-    public static function liste(int $chaineId): never
+    private const COLONNES = 'o.id, o.fichier, o.nom_origine, o.type, o.taille, o.largeur, o.hauteur, o.duree, o.envoye_le, o.auteur_id, o.portee';
+
+    /**
+     * Médias que l'utilisateur peut insérer dans une playlist, pour l'éditeur de pages.
+     *
+     * @return array<int, array{id: int, nom: string, type: string, url: string}>
+     */
+    public static function visibles(array $u): array
     {
-        Droits::exigerChaine(Auth::exigerConnexion(), $chaineId);
-        $utilises = self::utilisations($chaineId);
+        [$visible, $params] = Droits::sqlVisible('media', $u);
+        $resultat = [];
+        foreach (Db::lignes("SELECT o.id, o.nom_origine, o.type, o.fichier FROM medias o WHERE $visible ORDER BY o.nom_origine", $params) as $m) {
+            $resultat[(int) $m['id']] = self::resume($m);
+        }
+        return $resultat;
+    }
+
+    /** Nom, type et URL d'un média (ligne avec id, nom_origine, type, fichier). */
+    public static function resume(array $m): array
+    {
+        return [
+            'id' => (int) $m['id'],
+            'nom' => $m['nom_origine'],
+            'type' => $m['type'],
+            'url' => Config::get('url_base') . '/uploads/' . rawurlencode($m['fichier']),
+        ];
+    }
+
+    /**
+     * GET /api/medias?chaine=&auteur=&portee= : médias visibles. chaine : ceux ouverts à cette
+     * chaîne ; portee : globale, restreinte ou privee.
+     */
+    public static function liste(): never
+    {
+        $u = Auth::exigerConnexion();
+        $chaine = self::filtreId('chaine');
+        $auteur = self::filtreId('auteur');
+        $portee = $_GET['portee'] ?? null;
+        if ($chaine !== null) {
+            Droits::exigerChaine($u, $chaine);
+        }
+        [$visible, $params] = Droits::sqlVisible('media', $u);
         $lignes = Db::lignes(
-            "SELECT m.id, m.fichier, m.nom_origine, m.type, m.taille, m.largeur, m.hauteur, m.duree, m.envoye_le,
-                    COALESCE(NULLIF(u.nom, ''), u.identifiant) AS envoye_par
-             FROM medias m LEFT JOIN utilisateurs u ON u.id = m.envoye_par
-             WHERE m.chaine_id = ? ORDER BY m.envoye_le DESC, m.id DESC",
-            [$chaineId]
+            'SELECT ' . self::COLONNES . ', ' . Bibliotheque::sqlNom('e') . ' AS envoye_par, ' . Bibliotheque::sqlNom('a') . " AS auteur
+             FROM medias o
+             LEFT JOIN utilisateurs e ON e.id = o.envoye_par
+             LEFT JOIN utilisateurs a ON a.id = o.auteur_id
+             WHERE $visible ORDER BY o.envoye_le DESC, o.id DESC",
+            $params
         );
+        $acces = Bibliotheque::acces('media', array_map(static fn (array $m): int => (int) $m['id'], $lignes));
+        $noms = Bibliotheque::noms($acces);
+        $utilisations = Bibliotheque::utilisationsMedias();
+        $playlistsVisibles = Bibliotheque::idsVisibles('playlist', $u);
+
+        $medias = [];
+        foreach ($lignes as $m) {
+            $a = $acces[(int) $m['id']];
+            if (($chaine !== null && !in_array($chaine, $a['chaines'], true))
+                || ($auteur !== null && (int) $m['auteur_id'] !== $auteur)
+                || ($portee !== null && $portee !== ControleurPlaylists::porteeAffichee($m['portee'], $a))) {
+                continue;
+            }
+            $medias[] = self::publier($m, $a, $noms, Bibliotheque::utilisationsLisibles($utilisations[(int) $m['id']] ?? [], $playlistsVisibles), $u);
+        }
         Reponse::json([
-            'medias' => array_map(static fn (array $m): array => self::publier($m, $utilises[(int) $m['id']] ?? []), $lignes),
+            'medias' => $medias,
             'taille_max' => self::tailleMax(),
             'types' => array_keys(self::TYPES),
         ]);
     }
 
-    /** POST /api/chaines/{id}/medias (multipart : fichier ; pour une vidéo, largeur, hauteur, duree mesurées par le navigateur) */
-    public static function envoyer(int $chaineId): never
+    /**
+     * POST /api/medias (multipart : fichier ; chaine facultative ; pour une vidéo, largeur, hauteur,
+     * duree mesurées par le navigateur). Avec chaine (où l'utilisateur a un droit) : restreint à
+     * cette chaîne ; sinon privé.
+     */
+    public static function envoyer(): never
     {
         $u = Auth::exigerConnexion();
-        Droits::exigerChaine($u, $chaineId);
+        $chaine = null;
+        if (($_POST['chaine'] ?? '') !== '') {
+            if (!is_string($_POST['chaine']) || !preg_match('/^[1-9][0-9]{0,9}$/', $_POST['chaine'])) {
+                Reponse::erreur('chaine : identifiant attendu.', 400);
+            }
+            $chaine = (int) $_POST['chaine'];
+            Droits::exigerChaine($u, $chaine);
+        }
         $max = self::tailleMax();
         $limite = 'La limite est de ' . self::mo($max) . '.';
 
@@ -90,67 +155,58 @@ final class ControleurMedias
         @chmod($chemin, 0644);
 
         try {
-            Db::executer(
-                'INSERT INTO medias (chaine_id, fichier, nom_origine, type, taille, largeur, hauteur, duree, envoye_par)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$chaineId, $fichier, $nomOrigine, $type, (int) $f['size'], $largeur, $hauteur, $duree, $u['id']]
-            );
+            $id = Db::transaction(static function () use ($fichier, $nomOrigine, $type, $f, $largeur, $hauteur, $duree, $u, $chaine): int {
+                Db::executer(
+                    'INSERT INTO medias (fichier, nom_origine, type, taille, largeur, hauteur, duree, envoye_par, auteur_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [$fichier, $nomOrigine, $type, (int) $f['size'], $largeur, $hauteur, $duree, $u['id'], $u['id']]
+                );
+                $id = Db::dernierId();
+                Bibliotheque::ecrireAcces('media', $id, $chaine === null ? [] : [$chaine], []);
+                return $id;
+            });
         } catch (Throwable $e) {
             @unlink($chemin);
             throw $e;
         }
         $m = Db::ligne(
-            "SELECT m.*, COALESCE(NULLIF(u.nom, ''), u.identifiant) AS envoye_par
-             FROM medias m LEFT JOIN utilisateurs u ON u.id = m.envoye_par WHERE m.id = ?",
-            [Db::dernierId()]
+            'SELECT ' . self::COLONNES . ', ' . Bibliotheque::sqlNom('e') . ' AS envoye_par, ' . Bibliotheque::sqlNom('a') . ' AS auteur
+             FROM medias o LEFT JOIN utilisateurs e ON e.id = o.envoye_par LEFT JOIN utilisateurs a ON a.id = o.auteur_id WHERE o.id = ?',
+            [$id]
         );
-        Reponse::json(['media' => self::publier($m, [])], 201);
+        $acces = Bibliotheque::acces('media', [$id])[$id];
+        Reponse::json(['media' => self::publier($m, $acces, Bibliotheque::noms([$acces]), ['noms' => [], 'autres' => 0], $u)], 201);
     }
 
-    /** DELETE /api/chaines/{id}/medias/{mid} : refusé (409) si une playlist l'utilise. */
-    public static function supprimer(int $chaineId, int $mediaId): never
+    /** DELETE /api/medias/{id} : auteur ou administrateur ; refusé (409) si une playlist l'utilise. */
+    public static function supprimer(int $mediaId): never
     {
-        Droits::exigerChaine(Auth::exigerConnexion(), $chaineId);
-        $fichier = Db::valeur('SELECT fichier FROM medias WHERE id = ? AND chaine_id = ?', [$mediaId, $chaineId])
-            ?? Reponse::erreur('Média introuvable.', 404);
-        $playlists = self::utilisations($chaineId)[$mediaId] ?? [];
+        $u = Auth::exigerConnexion();
+        $m = Droits::exigerObjet($u, 'media', $mediaId, 'modifier');
+        $playlists = Bibliotheque::utilisationsMedias()[$mediaId] ?? [];
         if ($playlists !== []) {
-            Reponse::erreur('Ce média est utilisé par : ' . implode(', ', $playlists) . '. Retirez-le de ces playlists avant de le supprimer.', 409);
+            $lisibles = Bibliotheque::utilisationsLisibles($playlists, Bibliotheque::idsVisibles('playlist', $u));
+            Reponse::erreur('Ce média est utilisé par : ' . self::listeUtilisations($lisibles) . '. Retirez-le de ces playlists avant de le supprimer.', 409);
         }
-        Db::executer('DELETE FROM medias WHERE id = ? AND chaine_id = ?', [$mediaId, $chaineId]);
-        if (preg_match('/^[A-Za-z0-9._-]+$/', (string) $fichier) && is_file(self::dossier() . $fichier)) {
+        Db::executer('DELETE FROM medias WHERE id = ?', [$mediaId]);
+        $fichier = (string) $m['fichier'];
+        if (preg_match('/^[A-Za-z0-9._-]+$/', $fichier) && is_file(self::dossier() . $fichier)) {
             unlink(self::dossier() . $fichier);
         }
         Reponse::json(['ok' => true]);
     }
 
-    /**
-     * Playlists qui utilisent chaque média de la chaîne.
-     *
-     * @return array<int, list<string>> identifiant du média → noms des playlists
-     */
-    private static function utilisations(int $chaineId): array
+    /** « Accueil, Menu, 2 autre(s) playlist(s) » */
+    public static function listeUtilisations(array $lisibles): string
     {
-        $resultat = [];
-        foreach (Db::lignes('SELECT id, nom, pages FROM playlists WHERE chaine_id = ?', [$chaineId]) as $p) {
-            foreach (Pages::lire((string) $p['pages'], (int) $p['id']) as $page) {
-                foreach (is_array($page['widgets'] ?? null) ? $page['widgets'] : [] as $w) {
-                    if (!is_array($w) || ($w['type'] ?? null) !== 'media' || !is_array($w['elements'] ?? null)) {
-                        continue;
-                    }
-                    foreach ($w['elements'] as $e) {
-                        $id = is_array($e) ? ($e['media'] ?? null) : null;
-                        if (is_int($id) && !in_array($p['nom'], $resultat[$id] ?? [], true)) {
-                            $resultat[$id][] = $p['nom'];
-                        }
-                    }
-                }
-            }
+        $morceaux = $lisibles['noms'];
+        if ($lisibles['autres'] > 0) {
+            $morceaux[] = $lisibles['autres'] . ' autre(s) playlist(s)';
         }
-        return $resultat;
+        return implode(', ', $morceaux);
     }
 
-    private static function publier(array $m, array $playlists): array
+    private static function publier(array $m, array $acces, array $noms, array $utilisations, array $u): array
     {
         return [
             'id' => (int) $m['id'],
@@ -163,8 +219,25 @@ final class ControleurMedias
             'url' => Config::get('url_base') . '/uploads/' . rawurlencode($m['fichier']),
             'envoye_le' => $m['envoye_le'],
             'envoye_par' => $m['envoye_par'],
-            'utilise_par' => $playlists,
+            'auteur' => $m['auteur_id'] === null ? null : ['id' => (int) $m['auteur_id'], 'nom' => $m['auteur']],
+            'portee' => ControleurPlaylists::porteeAffichee($m['portee'], $acces),
+            'acces' => Bibliotheque::accesPublies($acces, $noms),
+            'utilise_par' => $utilisations['noms'],
+            'utilise_par_autres' => $utilisations['autres'],
+            'modifiable' => Droits::peutModifierObjet($u, $m),
         ];
+    }
+
+    private static function filtreId(string $nom): ?int
+    {
+        $valeur = $_GET[$nom] ?? null;
+        if ($valeur === null || $valeur === '') {
+            return null;
+        }
+        if (!is_string($valeur) || !preg_match('/^[1-9][0-9]{0,9}$/', $valeur)) {
+            Reponse::erreur("Filtre $nom : identifiant attendu.", 400);
+        }
+        return (int) $valeur;
     }
 
     private static function dossier(): string

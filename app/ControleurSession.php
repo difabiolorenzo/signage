@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-/** Connexion, déconnexion et utilisateur courant de l'éditeur. */
+/** Connexion, déconnexion, utilisateur courant de l'éditeur et « Mon compte ». */
 final class ControleurSession
 {
     /** Échecs tolérés sur la fenêtre, par identifiant puis par adresse IP. */
@@ -52,6 +52,51 @@ final class ControleurSession
     public static function deconnexion(): never
     {
         Auth::deconnecter();
+        Reponse::json(['ok' => true]);
+    }
+
+    /** PUT /api/moi { nom } : chaque utilisateur peut changer son nom affiché. */
+    public static function modifierMoi(): never
+    {
+        $u = Auth::exigerConnexion();
+        $nom = ControleurUtilisateurs::nom(Requete::json()['nom'] ?? '');
+        Db::executer('UPDATE utilisateurs SET nom = ? WHERE id = ?', [$nom, $u['id']]);
+        Reponse::json(['utilisateur' => ['nom' => $nom] + $u]);
+    }
+
+    /**
+     * PUT /api/moi/mot_de_passe { ancien, nouveau, confirmation } : l'ancien mot de passe est exigé
+     * (ses échecs comptent comme des échecs de connexion) ; les autres sessions sont fermées.
+     */
+    public static function changerMotDePasse(): never
+    {
+        $u = Auth::exigerConnexion();
+        $corps = Requete::json();
+        $ancien = $corps['ancien'] ?? null;
+        $nouveau = $corps['nouveau'] ?? null;
+        if (!is_string($ancien) || $ancien === '' || strlen($ancien) > 4096) {
+            Reponse::erreur('Saisissez votre mot de passe actuel.', 400);
+        }
+        if (!is_string($nouveau) || $nouveau !== ($corps['confirmation'] ?? null)) {
+            Reponse::erreur('Les deux saisies du nouveau mot de passe ne sont pas identiques.', 400);
+        }
+
+        $depuis = (new DateTimeImmutable('-' . self::FENETRE_MINUTES . ' minutes'))->format('Y-m-d H:i:s');
+        $echecs = (int) Db::valeur('SELECT COUNT(*) FROM tentatives_connexion WHERE identifiant = ? AND quand > ?', [$u['identifiant'], $depuis]);
+        if ($echecs >= self::ECHECS_IDENTIFIANT) {
+            header('Retry-After: ' . self::FENETRE_MINUTES * 60);
+            Reponse::erreur('Trop de tentatives : réessayez dans ' . self::FENETRE_MINUTES . ' minutes.', 429);
+        }
+        $empreinte = (string) Db::valeur('SELECT mot_de_passe FROM utilisateurs WHERE id = ?', [$u['id']]);
+        if (!password_verify($ancien, $empreinte)) {
+            Db::executer('INSERT INTO tentatives_connexion (ip, identifiant) VALUES (?, ?)', [Requete::ip(), $u['identifiant']]);
+            Reponse::erreur('Mot de passe actuel incorrect.', 403);
+        }
+        if ($nouveau === $ancien) {
+            Reponse::erreur("Le nouveau mot de passe doit être différent de l'actuel.", 400);
+        }
+        Db::executer('UPDATE utilisateurs SET mot_de_passe = ? WHERE id = ?', [ControleurUtilisateurs::empreinte($nouveau), $u['id']]);
+        Auth::fermerSessions($u['id']);
         Reponse::json(['ok' => true]);
     }
 

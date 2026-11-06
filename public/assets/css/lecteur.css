@@ -56,8 +56,56 @@ html, body { margin: 0; height: 100%; }
 .bloc .grand { font-size: 1.6em; font-weight: 600; }
 .bloc .petit { font-size: .6em; opacity: .85; }
 .cadran { width: 100%; flex: 1 1 auto; min-height: 0; }
-.qr-code { flex: 1 1 auto; min-height: 0; max-width: 100%; background: #fff; }
+.qr-code { flex: 1 1 auto; min-height: 0; max-width: 100%; }
 .qr .petit { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* Météo : la région est un conteneur, chaque modèle s'adapte à sa forme (haute ou large). */
+.meteo { position: absolute; inset: 0; overflow: hidden; container-type: size; }
+.meteo-contenu {
+    box-sizing: border-box; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: .5em; padding: .4em; text-align: center; line-height: 1.15;
+}
+.meteo .ligne { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.meteo .grand { font-size: 1.6em; font-weight: 600; }
+.meteo .petit { font-size: .6em; opacity: .85; }
+.meteo-icone { flex: none; width: 2.6em; height: 2.6em; }
+.meteo-actuel { display: flex; align-items: center; gap: .4em; max-width: 100%; min-width: 0; }
+.meteo-texte { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.meteo-jours { display: flex; gap: .4em; width: 100%; min-height: 0; justify-content: center; }
+.meteo-jour {
+    flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: .15em;
+    padding: .3em; border-radius: .3em; background: rgba(255, 255, 255, .08); font-size: .6em;
+}
+.meteo-jour .meteo-icone { width: 3em; height: 3em; }
+.meteo-nom-jour { font-weight: 600; text-transform: capitalize; }
+.meteo-jour > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.meteo-pluie:empty { display: none; }
+/* Carte verticale : jours en lignes sous le temps actuel. */
+.meteo-carte .meteo-jours { flex-direction: column; flex: 1 1 auto; justify-content: flex-start; }
+.meteo-carte .meteo-jour { flex: 0 1 auto; flex-direction: row; justify-content: space-between; gap: .6em; width: 100%; }
+.meteo-carte .meteo-jour .meteo-icone { width: 2em; height: 2em; }
+.meteo-carte .meteo-nom-jour { flex: 1; text-align: left; }
+@container (max-aspect-ratio: 1/1) {
+    .meteo-actuel { flex-direction: column; }
+    .meteo-texte { align-items: center; }
+    .meteo-bandeau .meteo-jours { flex-direction: column; }
+    .meteo-bandeau .meteo-jour { flex-direction: row; justify-content: space-between; gap: .6em; }
+    .meteo-bandeau .meteo-jour .meteo-icone { width: 2em; height: 2em; }
+    .meteo-bandeau .meteo-nom-jour { flex: 1; text-align: left; }
+}
+@container (min-aspect-ratio: 5/2) {
+    .meteo-carte { flex-direction: row; }
+    .meteo-carte .meteo-jours { flex-direction: row; flex: 1 1 auto; }
+    .meteo-carte .meteo-jour { flex: 1 1 0; flex-direction: column; justify-content: center; gap: .15em; }
+    .meteo-carte .meteo-nom-jour { flex: none; text-align: center; }
+    .meteo-carte > .meteo-actuel { flex: none; }
+}
+/* Région étroite : l'essentiel seulement (jour, icône, températures). */
+@container (max-width: 14em) {
+    .meteo-pluie { display: none; }
+    .meteo-jour .meteo-nom-jour { flex: none; }
+    .meteo-jour { gap: .3em; padding: .25em .2em; }
+}
 
 /* Page web, YouTube */
 .cadre { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }

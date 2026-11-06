@@ -15,6 +15,10 @@ final class Pages
     private const OCTETS_MAX = 512 * 1024;
     private const DUREE_MAX = 86400;
     private const MOTIF_COULEUR = '/^(#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?|transparent)$/';
+    /** Code QR : formes des modules (voir lecteur/widgets/qr.js). */
+    public const FORMES_QR = ['carres', 'arrondis', 'points'];
+    /** Météo : modèles d'affichage (voir lecteur/widgets/meteo.js). */
+    public const MODELES_METEO = ['actuelle', 'actuelle_journee', 'bandeau', 'carte'];
 
     /** Pages d'un document enregistré ; document illisible : aucune page, et une trace dans le journal. */
     public static function lire(string $json, int $playlistId): array
@@ -27,6 +31,35 @@ final class Pages
         return array_values(array_filter($document['pages'], 'is_array'));
     }
 
+    /**
+     * Identifiants des médias utilisés par des pages : images et vidéos des widgets média, logo
+     * des codes QR.
+     *
+     * @return list<int>
+     */
+    public static function medias(array $pages): array
+    {
+        $ids = [];
+        foreach ($pages as $page) {
+            foreach (is_array($page['widgets'] ?? null) ? $page['widgets'] : [] as $w) {
+                if (!is_array($w)) {
+                    continue;
+                }
+                if (($w['type'] ?? null) === 'qr' && is_int($w['logo'] ?? null)) {
+                    $ids[$w['logo']] = true;
+                }
+                if (($w['type'] ?? null) === 'media' && is_array($w['elements'] ?? null)) {
+                    foreach ($w['elements'] as $e) {
+                        if (is_array($e) && is_int($e['media'] ?? null)) {
+                            $ids[$e['media']] = true;
+                        }
+                    }
+                }
+            }
+        }
+        return array_keys($ids);
+    }
+
     /** Document JSON à enregistrer. */
     public static function document(array $pages): string
     {
@@ -37,7 +70,8 @@ final class Pages
      * Vérifie les pages envoyées par l'éditeur ; réponse 400 avec un message clair sinon.
      * Règles de lecture : au moins une page, un widget par région, un seul widget YouTube par page.
      *
-     * @param list<int> $mediasChaine identifiants des médias de la chaîne
+     * @param list<int> $mediasChaine identifiants des médias autorisés : ceux que l'utilisateur voit,
+     *     et ceux que la playlist utilisait déjà
      */
     public static function verifier(mixed $pages, int $nombreRegions, array $mediasChaine): array
     {
@@ -101,6 +135,12 @@ final class Pages
                 if ($type === 'media') {
                     $widget['elements'] = self::elementsMedia($widget['elements'] ?? [], $mediasChaine, $n, $j + 1);
                 }
+                if ($type === 'qr') {
+                    $widget = self::reglagesQr($widget, $mediasChaine, "Page $n, région " . ($j + 1));
+                }
+                if ($type === 'meteo') {
+                    self::reglagesMeteo($widget, "Page $n, région " . ($j + 1));
+                }
             }
             unset($widget);
             if (count($youtube) > 1) {
@@ -109,6 +149,37 @@ final class Pages
             $propres[] = ['duree' => $duree, 'fond' => $fond, 'widgets' => $widgets];
         }
         return $propres;
+    }
+
+    /** Code QR : couleurs #rrggbb, marge de 0 à 10 modules, forme connue, logo parmi les médias de la chaîne. */
+    private static function reglagesQr(array $widget, array $mediasChaine, string $ou): array
+    {
+        foreach (['qr_couleur', 'qr_fond'] as $cle) {
+            if (isset($widget[$cle]) && (!is_string($widget[$cle]) || !preg_match('/^#[0-9a-fA-F]{6}$/', $widget[$cle]))) {
+                Reponse::erreur("$ou : couleur du code QR invalide.", 400);
+            }
+        }
+        if (isset($widget['qr_marge']) && (!is_int($widget['qr_marge']) || $widget['qr_marge'] < 0 || $widget['qr_marge'] > 10)) {
+            Reponse::erreur("$ou : marge du code QR entre 0 et 10.", 400);
+        }
+        if (isset($widget['qr_forme']) && !in_array($widget['qr_forme'], self::FORMES_QR, true)) {
+            Reponse::erreur("$ou : forme des modules inconnue.", 400);
+        }
+        if (isset($widget['logo']) && (!is_int($widget['logo']) || !in_array($widget['logo'], $mediasChaine, true))) {
+            Reponse::erreur("$ou : logo introuvable dans les médias de cette chaîne.", 400);
+        }
+        unset($widget['logo_url']); // calculée à la lecture, jamais enregistrée
+        return $widget;
+    }
+
+    private static function reglagesMeteo(array $widget, string $ou): void
+    {
+        if (isset($widget['modele']) && !in_array($widget['modele'], self::MODELES_METEO, true)) {
+            Reponse::erreur("$ou : modèle d'affichage météo inconnu.", 400);
+        }
+        if (isset($widget['jours']) && (!is_int($widget['jours']) || $widget['jours'] < 1 || $widget['jours'] > 7)) {
+            Reponse::erreur("$ou : nombre de jours de prévision entre 1 et 7.", 400);
+        }
     }
 
     private static function elementsMedia(mixed $elements, array $mediasChaine, int $page, int $region): array

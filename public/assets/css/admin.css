@@ -74,6 +74,13 @@ a { color: inherit; }
 .vide { color: var(--texte-doux); }
 .erreur { margin: .5rem 0; padding: .5rem .75rem; border-left: 4px solid var(--danger); background: #fde8e8; color: #7a1d14; }
 
+/* Filtres de la bibliothèque (menus Playlists et Médias) et fenêtre « Portée » */
+.filtres { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .8rem; margin-bottom: 1rem; }
+.filtre { display: flex; flex-direction: column; gap: .2rem; font-size: .85rem; }
+.filtre .etiquette { color: var(--texte-doux); }
+.filtre select { min-width: 10rem; }
+fieldset.bloc-portee { min-width: 0; margin: 0; padding: .5rem .75rem; border: 1px solid #ccc; border-radius: 3px; }
+
 /* Segments (filtre, orientation) */
 .segments { display: inline-flex; align-items: center; gap: .25rem; }
 .segments .etiquette { margin-right: .25rem; color: var(--texte-doux); }
@@ -153,7 +160,7 @@ input, select { padding: .45rem .55rem; border: 1px solid #b9c2c7; border-radius
     .onglet { margin: 0; padding: .5rem .8rem; border-right: 1px solid var(--bordure); }
     .retour, .nom-chaine { padding: 0 .5rem; margin: 0; }
     .contenu, .barre { padding-left: 1rem; padding-right: 1rem; }
-    .compte span { display: none; }
+    .compte .lien-compte { display: none; }
 }
 
 /* Grille personnalisée (création de playlist) */
@@ -403,3 +410,28 @@ input.invalide { border-color: var(--danger); background: #fff3f2; }
 .raccourcis-jours { display: flex; gap: .2rem; margin-top: .3rem; }
 .raccourcis-jours .bouton { padding: .1rem .4rem; font-size: .85rem; }
 input.court { width: 7rem; }
+
+/* Période de validité des playlists */
+.badge-validite { position: absolute; top: 6px; left: 6px; padding: 2px 8px; border-radius: 10px; font-size: .75rem; font-weight: 600; }
+.badge-validite.a_venir { background: #9fd3f5; color: #0d3550; }
+.badge-validite.en_cours { background: #8fdc95; color: #123d16; }
+.badge-validite.expiree { background: #d5d5d5; color: #333; }
+.meta.validite.expiree { color: #f2a59b; }
+.barre-editeur .bouton.expiree { border-color: var(--danger); color: var(--danger); }
+.bloc-plage.hors-periode, .puce-plage.hors-periode { opacity: .45; filter: grayscale(1); text-decoration: line-through; }
+
+/* Mon compte */
+.lien-compte { color: inherit; text-decoration: none; }
+.lien-compte:hover { text-decoration: underline; }
+.lien-compte:focus-visible { outline: 2px solid var(--marque); outline-offset: 2px; }
+.grille-compte { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; max-width: 56rem; align-items: start; }
+.formulaire-compte { display: flex; flex-direction: column; gap: .7rem; }
+.formulaire-compte .champ { display: flex; flex-direction: column; gap: .3rem; }
+.formulaire-compte small { color: var(--texte-doux); }
+
+/* Sauvegarde */
+.formulaire-compte .avertissement { margin: 0; }
+.liste-controle { margin: .3rem 0 .6rem; padding-left: 1.2rem; max-height: 12rem; overflow-y: auto; font-size: .9rem; overflow-wrap: anywhere; }
+.resultat-restauration { display: flex; flex-direction: column; gap: .4rem; padding-top: .6rem; border-top: 1px solid #3a525b; }
+.resultat-restauration .succes { margin: 0; padding: .4rem .7rem; border-left: 4px solid #8fdc95; background: rgba(143, 220, 149, .12); font-weight: 600; }
+.resultat-restauration .bouton { align-self: flex-start; }

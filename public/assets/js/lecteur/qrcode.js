@@ -1,12 +1,31 @@
-// Générateur de code QR (norme ISO/IEC 18004) : mode octets, correction d'erreur M,
-// versions 1 à 40. Renvoie une matrice de booléens (true = module foncé), sans marge.
+// Générateur de code QR (norme ISO/IEC 18004) : mode octets, niveaux de correction d'erreur
+// L, M, Q et H (7, 15, 25 et 30 % du code récupérable), versions 1 à 40. Renvoie une matrice de
+// booléens (true = module foncé), sans marge.
 
-// Codewords de correction par bloc et nombre de blocs, niveau M, indexés par version.
-const ECC_PAR_BLOC = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26,
-    28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28];
-const NOMBRE_BLOCS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21,
-    23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49];
-const BITS_NIVEAU_M = 0;
+// Par niveau : codewords de correction par bloc et nombre de blocs, indexés par version.
+const ECC_PAR_BLOC = {
+    L: [0, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28, 30, 30, 26, 28,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+    M: [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28,
+        28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28],
+    Q: [0, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30, 30, 30, 30, 28,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+    H: [0, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24, 30, 30, 30, 30,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+};
+const NOMBRE_BLOCS = {
+    L: [0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13, 14, 15, 16, 17,
+        18, 19, 19, 20, 21, 22, 24, 25],
+    M: [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29,
+        31, 33, 35, 37, 38, 40, 43, 45, 47, 49],
+    Q: [0, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29, 34, 34, 35, 38,
+        40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68],
+    H: [0, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32, 35, 37, 40, 42, 45,
+        48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81],
+};
+/** Bits du niveau dans les informations de format. */
+const BITS_NIVEAU = { L: 1, M: 0, Q: 3, H: 2 };
+export const NIVEAUX_CORRECTION = Object.freeze(Object.keys(BITS_NIVEAU));
 
 // --- Corps de Galois GF(256), polynôme 0x11D ---
 const EXP = new Uint8Array(512);
@@ -78,21 +97,21 @@ function modulesDonnees(version) {
     return n;
 }
 
-const codewordsDonnees = (v) => Math.floor(modulesDonnees(v) / 8) - ECC_PAR_BLOC[v] * NOMBRE_BLOCS[v];
+const codewordsDonnees = (v, niveau) => Math.floor(modulesDonnees(v) / 8) - ECC_PAR_BLOC[niveau][v] * NOMBRE_BLOCS[niveau][v];
 
 // --- Encodage ---
-function encoder(octets) {
+function encoder(octets, niveau) {
     let version = 1;
     for (; version <= 40; version++) {
         const bitsLongueur = version < 10 ? 8 : 16;
-        if (4 + bitsLongueur + octets.length * 8 <= codewordsDonnees(version) * 8) {
+        if (4 + bitsLongueur + octets.length * 8 <= codewordsDonnees(version, niveau) * 8) {
             break;
         }
     }
     if (version > 40) {
         throw new Error('Texte trop long pour un code QR.');
     }
-    const capacite = codewordsDonnees(version) * 8;
+    const capacite = codewordsDonnees(version, niveau) * 8;
     const bits = [];
     const ajouter = (valeur, n) => {
         for (let i = n - 1; i >= 0; i--) {
@@ -111,13 +130,13 @@ function encoder(octets) {
     for (let i = 0; i < bits.length; i += 8) {
         donnees.push(bits.slice(i, i + 8).reduce((a, b) => (a << 1) | b, 0));
     }
-    return { version, codewords: entrelacer(donnees, version) };
+    return { version, codewords: entrelacer(donnees, version, niveau) };
 }
 
 /** Découpe en blocs, ajoute la correction de chaque bloc, puis entrelace. */
-function entrelacer(donnees, version) {
-    const nombreBlocs = NOMBRE_BLOCS[version];
-    const ecc = ECC_PAR_BLOC[version];
+function entrelacer(donnees, version, niveau) {
+    const nombreBlocs = NOMBRE_BLOCS[niveau][version];
+    const ecc = ECC_PAR_BLOC[niveau][version];
     const total = Math.floor(modulesDonnees(version) / 8);
     const courts = nombreBlocs - (total % nombreBlocs);
     const longueurCourte = Math.floor(total / nombreBlocs) - ecc;
@@ -157,7 +176,7 @@ const MASQUES = [
     (x, y) => (((x + y) % 2) + ((x * y) % 3)) % 2 === 0,
 ];
 
-function construire(version, codewords, masque) {
+function construire(version, codewords, masque, niveau) {
     const taille = version * 4 + 17;
     const m = Array.from({ length: taille }, () => new Array(taille).fill(false));
     const fonction = Array.from({ length: taille }, () => new Array(taille).fill(false));
@@ -196,7 +215,7 @@ function construire(version, codewords, masque) {
     }));
 
     // Informations de format (niveau + masque), protégées par un code BCH.
-    const format = (BITS_NIVEAU_M << 3) | masque;
+    const format = (BITS_NIVEAU[niveau] << 3) | masque;
     let reste = format;
     for (let i = 0; i < 10; i++) {
         reste = (reste << 1) ^ ((reste >>> 9) * 0x537);
@@ -286,13 +305,16 @@ function penalite(m) {
     return p + Math.floor(Math.abs(fonces * 20 - n * n * 10) / (n * n)) * 10;
 }
 
-/** Matrice du code QR de `texte` (encodé en UTF-8). */
-export function codeQR(texte) {
-    const { version, codewords } = encoder([...new TextEncoder().encode(String(texte))]);
+/** Matrice du code QR de `texte` (encodé en UTF-8), au niveau de correction L, M, Q ou H. */
+export function codeQR(texte, niveau = 'M') {
+    if (!(niveau in BITS_NIVEAU)) {
+        throw new Error(`Niveau de correction inconnu : ${niveau}`);
+    }
+    const { version, codewords } = encoder([...new TextEncoder().encode(String(texte))], niveau);
     let meilleure = null;
     let meilleurePenalite = Infinity;
     for (let masque = 0; masque < 8; masque++) {
-        const m = construire(version, codewords, masque);
+        const m = construire(version, codewords, masque, niveau);
         const p = penalite(m);
         if (p < meilleurePenalite) {
             meilleure = m;

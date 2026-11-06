@@ -4,7 +4,7 @@
 
 import { couleurRegion } from '../commun/dispositions.js';
 import { api } from './api.js';
-import { apresAffichage, calendrier, demarrer, heuresTexte, JOURS, joursTexte, periodeTexte } from './calendrier.js';
+import { apresAffichage, calendrier, demarrer, heuresTexte, JOURS, joursTexte, nomAvecStatut, periodeTexte } from './calendrier.js';
 import { champ, confirmer, dialogue } from './dialogue.js';
 import { el } from './dom.js';
 import { ongletsChaine } from './navigation.js';
@@ -15,7 +15,7 @@ const sansId = ({ id, ...p }) => p;
 /** Fenêtre d'ajout ou de modification d'une plage ; renvoie la plage, ou null. */
 function formulairePlage(playlists, plage = null) {
     const p = plage ?? { playlist_id: playlists[0].id, date_debut: null, date_fin: null, heure_debut: '08:00', heure_fin: '18:00', jours: 31, priorite: 0 };
-    const playlist = el('select', {}, playlists.map((pl) => el('option', { value: pl.id, text: pl.nom, selected: pl.id === p.playlist_id })));
+    const playlist = el('select', {}, playlists.map((pl) => el('option', { value: pl.id, text: nomAvecStatut(pl), selected: pl.id === p.playlist_id })));
     const debut = el('input', { type: 'date', value: p.date_debut ?? '' });
     const fin = el('input', { type: 'date', value: p.date_fin ?? '' });
     const heureDebut = el('input', { type: 'time', required: true, value: p.heure_debut });
@@ -74,11 +74,14 @@ function formulairePlage(playlists, plage = null) {
 }
 
 export async function afficher(ecran, contexte, chaineId) {
-    const [{ chaine }, { playlists }, programmation] = await Promise.all([
+    const [{ chaine }, { playlists: programmables }, programmation] = await Promise.all([
         api.get(`/chaines/${chaineId}`),
-        api.get(`/chaines/${chaineId}/playlists`),
+        api.get(`/playlists?programmable=${chaineId}`),
         api.get(`/chaines/${chaineId}/programmation`),
     ]);
+    // Playlists proposées : celles que l'utilisateur peut programmer ici, plus celles déjà
+    // programmées qu'il ne voit pas dans la bibliothèque (pour les nommer et les garder).
+    const playlists = [...programmables, ...programmation.playlists.filter((p) => !programmables.some((x) => x.id === p.id))];
     document.title = `Programmation — ${chaine.nom} — Signage Studio`;
     let etat = programmation;
     let enCours = false;
@@ -109,7 +112,7 @@ export async function afficher(ecran, contexte, chaineId) {
             enCours = false;
             etat = reponse;
             annulation = annulable ? avant : null;
-            contexte.notifier(message, annulable ? { texte: 'Annuler', surClic: annuler } : null);
+            contexte.notifier(reponse.information ? `${message} ${reponse.information}` : message, annulable ? { texte: 'Annuler', surClic: annuler } : null);
             dessiner();
             return true;
         } catch (e) {
@@ -152,14 +155,14 @@ export async function afficher(ecran, contexte, chaineId) {
 
         const defaut = el('select', { 'aria-label': 'Playlist par défaut' },
             el('option', { value: '', text: '— Aucune (écran noir hors des plages) —', selected: etat.playlist_defaut_id === null }),
-            playlists.map((p) => el('option', { value: p.id, text: p.nom, selected: p.id === etat.playlist_defaut_id })));
+            playlists.map((p) => el('option', { value: p.id, text: nomAvecStatut(p), selected: p.id === etat.playlist_defaut_id })));
         defaut.addEventListener('change', () => enregistrer(
             { playlist_defaut_id: defaut.value === '' ? null : Number(defaut.value) },
             'Playlist par défaut enregistrée.',
         ));
 
         const lignes = etat.plages.map((p, i) => el('tr', {},
-            el('td', {}, el('span', { class: 'pastille', style: null }), nomDe(p.playlist_id)),
+            el('td', {}, el('span', { class: 'pastille', style: null }), nomAvecStatut(playlists.find((pl) => pl.id === p.playlist_id) ?? { nom: nomDe(p.playlist_id) })),
             el('td', { text: joursTexte(p.jours) }),
             el('td', { text: heuresTexte(p) }),
             el('td', { text: periodeTexte(p) }),

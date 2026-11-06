@@ -1,11 +1,14 @@
-// Éditeur : connexion, en-tête, navigation entre les écrans (#/ et #/chaines/{id}).
+// Éditeur : connexion, en-tête, navigation entre les écrans (#/, #/playlists, #/medias, #/chaines/{id}…).
 
 import { api, definirJeton, ErreurApi, quandSessionPerdue } from './api.js';
 import { basculeMotDePasse } from '../commun/mot_de_passe.js';
 import { el } from './dom.js';
+import * as ecranBibliothequePlaylists from './ecran_bibliotheque_playlists.js';
 import * as ecranChaines from './ecran_chaines.js';
+import * as ecranCompte from './ecran_compte.js';
 import * as ecranMedias from './ecran_medias.js';
 import * as ecranProgrammation from './ecran_programmation.js';
+import * as ecranSauvegarde from './ecran_sauvegarde.js';
 import * as ecranUtilisateurs from './ecran_utilisateurs.js';
 import * as ecranPlaylist from './ecran_playlist.js';
 import * as ecranPlaylists from './ecran_playlists.js';
@@ -56,7 +59,7 @@ function entete() {
     return el('header', { class: 'entete' },
         el('a', { class: 'marque', href: '#/' }, 'Signage ', el('span', { text: 'Studio' })),
         el('div', { class: 'compte' },
-            el('span', { text: `${nom} · ${utilisateur.role === 'admin' ? 'administrateur' : 'éditeur'}` }),
+            el('a', { class: 'lien-compte', href: '#/compte', title: 'Mon compte', text: `${nom} · ${utilisateur.role === 'admin' ? 'administrateur' : 'éditeur'}` }),
             el('button', { type: 'button', class: 'bouton lien', text: 'Déconnexion', onclick: deconnecter })));
 }
 
@@ -67,6 +70,11 @@ const contexte = {
     estAdmin: () => utilisateur?.role === 'admin',
     notifier,
     cadre,
+    /** Met à jour l'utilisateur connecté (ex. après « Mon compte ») et l'en-tête. */
+    majUtilisateur(u) {
+        utilisateur = { ...utilisateur, ...u };
+        racine.querySelector('.entete')?.replaceWith(entete());
+    },
     /** Défini par un écran qui peut avoir des modifications non enregistrées. */
     modificationsEnCours: null,
     /** Enregistre une fonction de nettoyage appelée en quittant l'écran courant. */
@@ -99,13 +107,25 @@ async function router() {
     const m = /^\/chaines\/(\d+)$/.exec(chemin);
     const mPlaylist = /^\/chaines\/(\d+)\/playlists\/(\d+)$/.exec(chemin);
     const mOnglet = /^\/chaines\/(\d+)\/(programmation|medias)$/.exec(chemin);
+    const mBibliotheque = /^\/playlists\/(\d+)$/.exec(chemin);
     const ecran = el('div', { class: 'ecran' });
     document.title = 'Signage Studio — Éditeur';
     racine.replaceChildren(entete(), ecran);
     try {
         if (mOnglet) {
+            // #/chaines/{id}/medias : ancienne adresse, menu « Médias » filtré sur la chaîne.
             const ecranOnglet = mOnglet[2] === 'medias' ? ecranMedias : ecranProgrammation;
             await ecranOnglet.afficher(ecran, contexte, Number(mOnglet[1]));
+        } else if (chemin === '/playlists') {
+            await ecranBibliothequePlaylists.afficher(ecran, contexte);
+        } else if (chemin === '/medias') {
+            await ecranMedias.afficher(ecran, contexte);
+        } else if (mBibliotheque) {
+            await ecranPlaylist.afficher(ecran, contexte, null, Number(mBibliotheque[1]));
+        } else if (chemin === '/sauvegarde') {
+            await ecranSauvegarde.afficher(ecran, contexte);
+        } else if (chemin === '/compte') {
+            await ecranCompte.afficher(ecran, contexte);
         } else if (chemin === '/utilisateurs') {
             await ecranUtilisateurs.afficher(ecran, contexte);
         } else if (mPlaylist) {
@@ -179,7 +199,8 @@ async function deconnecter() {
         // Session déjà fermée côté serveur : on revient quand même à l'écran de connexion.
     }
     definirJeton(null);
-    ecranConnexion();
+    // Rechargement : rien de la session précédente ne reste en mémoire (filtres des écrans…).
+    location.replace(location.pathname);
 }
 
 quandSessionPerdue(() => ecranConnexion('Votre session a expiré : reconnectez-vous.'));

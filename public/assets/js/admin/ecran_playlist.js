@@ -12,6 +12,7 @@ import { choixDisposition } from './choix_disposition.js';
 import { champ, confirmer, dialogue } from './dialogue.js';
 import { duree, el } from './dom.js';
 import { panneauProprietes } from './panneau.js';
+import { LIBELLES_STATUT, periodeValiditeTexte, statutValidite } from './validite.js';
 
 const libelleType = (type) => TYPES_WIDGETS.find((t) => t.type === type)?.libelle ?? type;
 
@@ -32,17 +33,29 @@ function normaliser(pages, nombreRegions) {
     }));
 }
 
+/**
+ * chaineId : ouverte depuis la page d'une chaîne (#/chaines/{c}/playlists/{p}), ou null depuis le
+ * menu « Playlists » (#/playlists/{p}). La chaîne sert au retour et à l'aperçu des flux RSS, que le
+ * serveur ne relaie que pour une chaîne qui programme la playlist.
+ */
 export async function afficher(ecran, contexte, chaineId, playlistId) {
-    const [{ chaine }, { playlist, medias }] = await Promise.all([
-        api.get(`/chaines/${chaineId}`),
-        api.get(`/chaines/${chaineId}/playlists/${playlistId}`),
+    const [{ chaines }, { playlist, medias }] = await Promise.all([
+        api.get('/chaines'),
+        api.get(`/playlists/${playlistId}`),
     ]);
+    const chaine = chaines.find((c) => c.id === chaineId)
+        ?? chaines.find((c) => playlist.utilisee_par.some((u) => u.id === c.id))
+        ?? chaines.find((c) => playlist.acces.chaines.some((a) => a.id === c.id))
+        ?? null;
+    const retour = chaineId !== null && chaine ? `#/chaines/${chaineId}` : '#/playlists';
     const mediasParId = new Map(medias.map((m) => [m.id, m]));
     const etat = {
         nom: playlist.nom,
         disposition: playlist.disposition,
         regions: playlist.regions,
         portrait: playlist.portrait,
+        valide_du: playlist.valide_du,
+        valide_au: playlist.valide_au,
         grilleModifiee: false, // disposition et régions à envoyer à l'enregistrement
         pages: normaliser(playlist.pages, playlist.regions.length),
         page: 0,
@@ -61,6 +74,7 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
     const boutonDisposition = el('button', {
         type: 'button', class: 'bouton', text: 'Changer la disposition…', title: 'Choisir une autre disposition ou redessiner la grille',
     });
+    const boutonPeriode = el('button', { type: 'button', class: 'bouton', title: 'Dates entre lesquelles la playlist peut être diffusée' });
     const boutonEchanger = el('button', {
         type: 'button', class: 'bouton', text: 'Échanger avec…', title: 'Permuter le contenu de la région choisie avec celui d\'une autre région',
     });
@@ -79,8 +93,8 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
 
     ecran.replaceChildren(el('div', { class: 'editeur' },
         el('div', { class: 'barre-editeur' },
-            el('a', { class: 'retour-editeur', href: `#/chaines/${chaineId}`, text: '← Playlists' }),
-            champNom, infos, boutonDisposition, indicateur,
+            el('a', { class: 'retour-editeur', href: retour, text: '← Playlists' }),
+            champNom, infos, boutonDisposition, boutonPeriode, indicateur,
             el('span', { class: 'espace' }),
             boutonEnregistrer),
         probleme,
@@ -89,10 +103,18 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
             zoneToile,
             proprietes)));
 
+    // Lecture seule : seuls l'auteur et les administrateurs peuvent enregistrer (vérifié par le serveur).
+    if (!playlist.modifiable) {
+        boutonEnregistrer.disabled = true;
+        boutonEnregistrer.title = 'Seuls l\'auteur et les administrateurs peuvent modifier cette playlist.';
+        probleme.textContent = `Lecture seule : seuls ${playlist.auteur ? `son auteur (${playlist.auteur.nom})` : 'son auteur'} et les administrateurs peuvent modifier cette playlist. Vous pouvez la dupliquer depuis la liste des playlists.`;
+        probleme.hidden = false;
+    }
+
     // --- Aperçu (même code que le lecteur) ---
     const contexteApercu = {
         maintenant: () => new Date(),
-        urlApi: `${document.body.dataset.api}/public/${encodeURIComponent(chaine.slug)}`,
+        urlApi: chaine ? `${document.body.dataset.api}/public/${encodeURIComponent(chaine.slug)}` : null,
     };
     let pageAffichee = null;
     let minuteurApercu = null;
@@ -101,7 +123,10 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
     function pagePourApercu(page) {
         return {
             ...page,
-            widgets: page.widgets.map((w) => (w.type !== 'media' ? w : {
+            widgets: page.widgets.map((w) => (w.type === 'qr' ? {
+                ...w,
+                logo_url: String(mediasParId.get(w.logo)?.type ?? '').startsWith('image/') ? mediasParId.get(w.logo).url : null,
+            } : w.type !== 'media' ? w : {
                 ...w,
                 elements: (w.elements ?? []).map((e) => {
                     const m = mediasParId.get(e.media);
@@ -363,6 +388,32 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
         probleme.textContent = message ?? '';
         probleme.hidden = message === null;
         indicateur.hidden = !etat.modifie;
+        const statut = statutValidite(etat);
+        boutonPeriode.textContent = statut ? `Diffusion ${periodeValiditeTexte(etat)} · ${LIBELLES_STATUT[statut].toLowerCase()}` : 'Diffusion : sans limite de dates';
+        boutonPeriode.classList.toggle('expiree', statut === 'expiree');
+    }
+
+    async function changerPeriode() {
+        const du = el('input', { type: 'date', value: etat.valide_du ?? '' });
+        const au = el('input', { type: 'date', value: etat.valide_au ?? '' });
+        const periode = await dialogue({
+            titre: 'Période de diffusion',
+            texteValider: 'Appliquer',
+            corps: [
+                el('p', { text: "En dehors de cette période, la playlist n'est jamais diffusée, même comme playlist par défaut : la plage suivante en priorité prend le relais. Laissez vide pour ne pas limiter." }),
+                el('div', { class: 'deux-colonnes' }, champ('Du (facultatif)', du), champ('Au (facultatif)', au)),
+            ],
+            valider: async () => {
+                if (du.value && au.value && au.value < du.value) {
+                    throw new Error('La fin de la période précède son début.');
+                }
+                return { valide_du: du.value || null, valide_au: au.value || null };
+            },
+        });
+        if (periode && (periode.valide_du !== etat.valide_du || periode.valide_au !== etat.valide_au)) {
+            Object.assign(etat, periode);
+            modifie();
+        }
     }
 
     function toutDessiner() {
@@ -389,11 +440,11 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
         }
         boutonEnregistrer.disabled = true;
         try {
-            const corps = { nom: champNom.value.trim(), pages: etat.pages };
+            const corps = { nom: champNom.value.trim(), pages: etat.pages, valide_du: etat.valide_du, valide_au: etat.valide_au };
             if (etat.grilleModifiee) {
                 Object.assign(corps, { disposition: etat.disposition, regions: etat.regions });
             }
-            await api.put(`/chaines/${chaineId}/playlists/${playlistId}`, corps);
+            await api.put(`/playlists/${playlistId}`, corps);
             etat.modifie = false;
             etat.grilleModifiee = false;
             dessinerInfos();
@@ -409,6 +460,7 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
     }
 
     boutonEnregistrer.addEventListener('click', enregistrer);
+    boutonPeriode.addEventListener('click', changerPeriode);
     champNom.addEventListener('input', modifie);
     const raccourci = (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {

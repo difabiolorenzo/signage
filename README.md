@@ -15,7 +15,7 @@ http://votre-serveur/signage/?chaine=restaurant
 - **Chaînes publiques** : le résultat de chaque chaîne est visible sans connexion, par l'URL de la chaîne. Tout changement apparaît sur les afficheurs sans intervention.
 - **Utilisateurs et droits** : un administrateur gère tout ; chaque éditeur ne modifie que les chaînes qui lui sont confiées.
 - **Dispositions d'écran** : 20 modèles en paysage, 18 en portrait, et une grille personnalisée de 16 × 16 cases.
-- **Widgets** : images et vidéos (avec transitions), texte défilant, page web, YouTube, horloge, date et heure, compte à rebours, météo, flux RSS, lien web et code QR.
+- **Widgets** : images et vidéos (avec transitions), texte défilant, page web, YouTube, horloge, date et heure, compte à rebours, météo (icônes, prévisions jusqu'à 7 jours, quatre présentations), flux RSS, lien web et code QR (couleurs, formes, logo).
 - **Programmation** : plages par dates, heures et jours de la semaine, avec une playlist par défaut.
 - **Médias** : envoi des images et vidéos sur le serveur, bibliothèque par chaîne.
 
@@ -83,6 +83,31 @@ Les lignes `php_admin_value` autorisent l'envoi de vidéos jusqu'à 64 Mo ; `env
 4. **Programmez-la** sur les jours et heures voulus.
 5. **Sur l'afficheur**, ouvrez `?chaine=nom-de-la-chaine` en plein écran.
 
+Chaque utilisateur change son nom et son mot de passe dans **Mon compte** (lien en haut à droite de l'éditeur).
+
+### Mot de passe oublié
+
+Un administrateur peut donner un nouveau mot de passe à n'importe quel compte (écran *Utilisateurs*). Si c'est l'administrateur lui-même qui a oublié le sien, lancer sur le serveur, depuis le dossier du projet :
+
+```
+php outils/reinitialiser_mdp.php identifiant
+```
+
+Le script affiche un nouveau mot de passe aléatoire, réactive le compte s'il était désactivé et ferme ses sessions ouvertes. Avec WAMP, `php` se trouve dans `C:\wamp64\bin\php\php8.x.x\`. Il n'y a pas de réinitialisation par e-mail.
+
+## Mise à jour
+
+Après avoir remplacé les fichiers par une nouvelle version, exécuter dans la base (onglet *SQL* de phpMyAdmin), dans l'ordre, chaque fichier de `sql/migrations/` qui n'a pas encore été appliqué. Le numéro de la dernière migration appliquée est enregistré dans la table `version_schema` (à partir de la migration 004).
+
+## Sauvegarde
+
+Écran *Sauvegarde* de l'éditeur (administrateurs) :
+
+- **Télécharger une sauvegarde** : un fichier `signage_sauvegarde_AAAA-MM-JJ_HHMM.json` avec toute la base (chaînes, playlists, programmation, liste des médias, comptes et droits ; mots de passe sous forme d'empreintes uniquement).
+- **Restaurer une sauvegarde** : remplace toutes les données par celles d'un fichier produit par le bouton précédent, d'une version de l'application identique ou plus ancienne. L'état actuel est d'abord enregistré sur le serveur dans le dossier `sauvegardes/`. À la fin, l'écran signale les médias dont le fichier manque et les fichiers qu'aucun média n'utilise.
+
+**Les médias ne sont pas dans la sauvegarde** : copiez aussi le dossier `public/uploads/` (et rapportez-le avant de restaurer sur un autre serveur). Le fichier de sauvegarde passe par l'envoi de fichiers de PHP : `upload_max_filesize` et `envoi_max_octets` doivent être assez grands.
+
 ## Structure du projet
 
 | Dossier | Rôle |
@@ -91,6 +116,8 @@ Les lignes `php_admin_value` autorisent l'envoi de vidéos jusqu'à 64 Mo ; `env
 | `app/` | Code PHP : base de données, connexion, droits, API |
 | `config/` | Configuration (`config.example.php` à copier en `config.php`) |
 | `sql/` | Schéma de la base et migrations |
+| `outils/` | Scripts en ligne de commande (réinitialisation d'un mot de passe) |
+| `sauvegardes/` | Sauvegardes automatiques faites avant chaque restauration (non versionnées) |
 
 ## Contribuer
 

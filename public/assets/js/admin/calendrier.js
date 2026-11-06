@@ -5,6 +5,7 @@
 
 import { champ, dialogue } from './dialogue.js';
 import { el } from './dom.js';
+import { LIBELLES_STATUT, statutValidite, valideLe } from './validite.js';
 
 export const JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
 const QUART = 15;
@@ -181,7 +182,7 @@ function ouvrirBulle(o, index, iso, ancre) {
         .filter((m) => m >= min && m <= max).sort((a, b) => a - b)
         .map((m) => el('option', { value: m, text: hhmm(m), selected: m === valeur }));
 
-    const playlist = el('select', {}, o.playlists.map((pl) => el('option', { value: pl.id, text: pl.nom, selected: pl.id === p.playlist_id })));
+    const playlist = el('select', {}, o.playlists.map((pl) => el('option', { value: pl.id, text: nomAvecStatut(pl), selected: pl.id === p.playlist_id })));
     const debut = el('select', {}, choixHeures(0, 1440 - QUART, minutes(p.heure_debut)));
     const fin = el('select', {}, choixHeures(QUART, 1440, minutes(p.heure_fin)));
     const cases = JOURS.map((j, i) => el('input', { type: 'checkbox', checked: Boolean(p.jours & (1 << i)) }));
@@ -628,18 +629,34 @@ function libelleBloc(o, p, iso) {
     return `${o.nomDe(p.playlist_id)}, ${dateJour.format(depuisIso(iso))}, ${heuresTexte(p)}, priorité ${p.priorite}`;
 }
 
-/** Plages actives un jour donné, avec pour chacune si une autre plus prioritaire la masque. */
+/** Nom d'une playlist suivi de son statut si sa période de diffusion est limitée. */
+export function nomAvecStatut(playlist) {
+    const statut = statutValidite(playlist);
+    return statut && statut !== 'en_cours' ? `${playlist.nom} (${LIBELLES_STATUT[statut].toLowerCase()})` : playlist.nom;
+}
+
+/**
+ * Plages actives un jour donné, avec pour chacune `horsPeriode` (sa playlist n'est pas valide ce
+ * jour-là : elle ne passe pas) et `masquee` (une autre plage diffusable plus prioritaire la cache).
+ */
 function activesDu(o, date) {
     const iso = dateIso(date);
     const actives = o.plages
-        .map((p, index) => ({ p, index }))
+        .map((p, index) => ({ p, index, horsPeriode: !valideLe(o.playlists.find((pl) => pl.id === p.playlist_id), iso) }))
         .filter(({ p }) => active(p, iso, jourDe(date)))
         .sort((a, b) => minutes(a.p.heure_debut) - minutes(b.p.heure_debut) || minutes(b.p.heure_fin) - minutes(a.p.heure_fin));
     for (const a of actives) {
-        a.masquee = actives.some((b) => b !== a && chevauche(a.p, b.p)
+        a.masquee = !a.horsPeriode && actives.some((b) => b !== a && !b.horsPeriode && chevauche(a.p, b.p)
             && (b.p.priorite > a.p.priorite || (b.p.priorite === a.p.priorite && b.index < a.index)));
     }
     return actives;
+}
+
+function etatOccurrence({ horsPeriode, masquee }) {
+    if (horsPeriode) {
+        return { classe: ' hors-periode', texte: 'hors de la période de diffusion de la playlist' };
+    }
+    return masquee ? { classe: ' masquee', texte: 'masquée par une plage prioritaire' } : { classe: '', texte: '' };
 }
 
 function colonneJour(o, date, k) {
@@ -661,14 +678,16 @@ function colonneJour(o, date, k) {
         return { ...a, couloir };
     });
     const nbCouloirs = Math.max(1, finsCouloirs.length);
-    for (const { p, index, couloir, masquee } of places) {
+    for (const place of places) {
+        const { p, index, couloir } = place;
         const debut = minutes(p.heure_debut);
+        const etat = etatOccurrence(place);
         const bloc = el('button', {
             type: 'button',
-            class: masquee ? 'bloc-plage masquee' : 'bloc-plage',
+            class: `bloc-plage${etat.classe}`,
             dataset: { index, occurrence: iso },
-            title: `${o.nomDe(p.playlist_id)} · ${heuresTexte(p)} · priorité ${p.priorite}${masquee ? ' · masquée par une plage prioritaire' : ''}`,
-            'aria-label': `${libelleBloc(o, p, iso)}${masquee ? ', masquée par une plage prioritaire' : ''}`,
+            title: `${o.nomDe(p.playlist_id)} · ${heuresTexte(p)} · priorité ${p.priorite}${etat.texte && ` · ${etat.texte}`}`,
+            'aria-label': `${libelleBloc(o, p, iso)}${etat.texte && `, ${etat.texte}`}`,
             'aria-describedby': 'aide-bloc-plage',
         },
         el('span', { class: 'poignee haut', 'aria-hidden': 'true' }),
@@ -760,11 +779,14 @@ function grilleMois(o) {
         const classes = ['cellule-mois', date.getMonth() !== premier.getMonth() && 'hors-mois', iso === aujourdHui && 'aujourdhui'];
         grille.append(el('div', { class: classes.filter(Boolean).join(' ') },
             el('button', { type: 'button', class: 'numero-jour', text: date.getDate(), 'aria-label': `Afficher le ${dateJour.format(date)}`, onclick: voirJour(date) }),
-            actives.slice(0, 3).map(({ p, index, masquee }) => {
+            actives.slice(0, 3).map((occurrence) => {
+                const { p, index } = occurrence;
+                const etat = etatOccurrence(occurrence);
                 const puce = el('button', {
-                    type: 'button', class: masquee ? 'puce-plage masquee' : 'puce-plage',
+                    type: 'button', class: `puce-plage${etat.classe}`,
                     dataset: { index, occurrence: iso },
-                    'aria-label': `${libelleBloc(o, p, iso)}${masquee ? ', masquée par une plage prioritaire' : ''}`,
+                    title: etat.texte || null,
+                    'aria-label': `${libelleBloc(o, p, iso)}${etat.texte && `, ${etat.texte}`}`,
                     'aria-describedby': 'aide-puce-plage',
                 }, el('span', { class: 'pastille' }), el('span', { text: `${p.heure_debut} ${o.nomDe(p.playlist_id)}` }));
                 puce.querySelector('.pastille').style.backgroundColor = o.couleurDe(p.playlist_id);
@@ -844,7 +866,7 @@ export function calendrier(o) {
                 el('li', { text: 'Clavier, sur la grille : flèches pour choisir un créneau, Maj + flèches pour l\'étendre, Entrée pour créer.' }),
                 el('li', { text: 'Sur une plage : flèches pour la déplacer, Maj + flèches pour changer sa fin, Alt + flèches pour son début, Suppr pour la supprimer.' }),
                 el('li', { text: 'Ailleurs : flèches gauche et droite pour changer de période, T pour aujourd\'hui, J / S / M pour la vue, Ctrl + Z pour annuler la dernière action, Échap pour interrompre un glisser ou fermer la bulle.' }),
-                el('li', { text: 'Plage hachurée : masquée par une plage de plus forte priorité au même moment.' }))));
+                el('li', { text: 'Plage hachurée : masquée par une plage de plus forte priorité au même moment. Plage grisée et barrée : sa playlist est hors de sa période de diffusion ce jour-là.' }))));
 }
 
 /** À appeler une fois le calendrier inséré dans la page : défilement, focus, bulle à rouvrir. */

@@ -30,17 +30,19 @@ Gestion de **chaînes** d'affichage dynamique : des utilisateurs composent des p
 | `app/` | Code PHP hors racine web : `Db`, `Auth`, `Droits`, contrôleurs de l'API |
 | `config/` | `config.example.php` (versionné) ; `config.php` (identifiants, ignoré par git) |
 | `sql/` | `schema.sql`, `migrations/` numérotées |
+| `outils/` | Scripts en ligne de commande (ex. `reinitialiser_mdp.php`), refusés par le navigateur |
+| `sauvegardes/` | Sauvegardes automatiques faites avant chaque restauration ; ignoré par git |
 | `assets/screenshots/` | Captures pour le README (anciennes captures Rust à remplacer) |
 | `docs/` | Privé, ignoré par git, réservé à l'utilisateur et à Claude : `TODO.md`, `etudes/` |
 | `_archive/` | Privé, ignoré par git : traces de l'analyse d'origine et, après archivage, le code Rust de référence. Ne rien en recopier dans le dépôt sauf des valeurs fonctionnelles (dispositions, valeurs par défaut, règles), sans les commentaires |
 
 ## Règles qui cassent l'application si on les oublie
 
-1. **Droits vérifiés côté serveur** : chaque route d'écriture de l'API appelle `Droits` (`estAdmin`, `peutModifier`). Masquer un bouton dans l'éditeur ne protège rien.
+1. **Droits vérifiés côté serveur** : chaque route d'écriture de l'API appelle `Droits` (`estAdmin`, `peutModifier` pour une chaîne, `exigerObjet` pour une playlist ou un média de la bibliothèque, `peutProgrammer`). Masquer un bouton dans l'éditeur ne protège rien.
 2. **SQL** : uniquement des requêtes préparées PDO, jamais de variable concaténée dans une requête.
 3. **Affichage de textes saisis** : `textContent` en JS, `htmlspecialchars` en PHP ; jamais `innerHTML` avec une donnée utilisateur. Seule exception, le texte mis en forme (Markdown, mise en forme du widget Texte) : il passe toujours par `nettoyer()` de `commun/texte_riche.js` (DOMPurify, liste blanche de balises et de styles) et s'insère en fragment DOM, jamais par `innerHTML`.
 4. **Écritures** : session + jeton CSRF obligatoires ; réponses JSON avec un code HTTP correct (400, 401, 403, 404).
-5. **Schéma** : toute modification de la base passe par un nouveau fichier `sql/migrations/NNN_description.sql` **et** la mise à jour de `schema.sql`.
+5. **Schéma** : toute modification de la base passe par un nouveau fichier `sql/migrations/NNN_description.sql`, qui se termine par `UPDATE version_schema SET version = NNN;`, **et** la mise à jour de `schema.sql` (y compris le numéro inséré dans `version_schema`). Migrations additives (colonne ajoutée avec une valeur par défaut) pour que les anciennes sauvegardes restent restaurables ; une nouvelle table à sauvegarder s'ajoute à `Sauvegarde::TABLES`.
 6. **JSON des pages** (`playlists.pages`) : porte `format: 1`. Changer sa structure impose d'incrémenter `format` et de convertir les anciennes playlists à la lecture.
 7. **Dispositions** : une playlist enregistre le nom de sa disposition et ses régions calculées ; ne pas renommer une disposition de `dispositions.js` sans garder l'ancien nom reconnu.
 8. **Lecteur public** : il ne doit jamais demander de connexion ni exposer autre chose que le contenu de la chaîne (pas d'identifiant, pas de nom d'utilisateur).

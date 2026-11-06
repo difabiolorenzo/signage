@@ -59,7 +59,7 @@ function supprimerChaine(chaine) {
         texteValider: 'Supprimer définitivement',
         danger: true,
         corps: [
-            el('p', { text: `La chaîne « ${chaine.nom} » sera supprimée avec ses ${chaine.nb_playlists} playlist(s), sa programmation et ses médias. Les afficheurs qui l'utilisent n'auront plus rien à montrer.` }),
+            el('p', { text: `La chaîne « ${chaine.nom} » sera supprimée avec sa programmation. Ses playlists et médias restent dans la bibliothèque ; ceux qui n'étaient ouverts qu'à elle deviennent privés (visibles par leur auteur et les administrateurs). Les afficheurs qui l'utilisent n'auront plus rien à montrer.` }),
             champ(`Pour confirmer, saisissez son adresse : ${chaine.slug}`, saisie),
         ],
         valider: async () => {
@@ -100,7 +100,7 @@ function carte(chaine, contexte, rafraichir) {
     return el('article', { class: 'carte' },
         el('h2', {}, el('a', { href: `#/chaines/${chaine.id}`, text: chaine.nom })),
         el('p', { class: 'lien-public' }, el('a', { href: lien, target: '_blank', rel: 'noopener', text: lien })),
-        el('p', { class: 'meta', text: `${chaine.orientation === 'portrait' ? 'Portrait' : 'Paysage'} · ${chaine.nb_playlists} playlist(s)` }),
+        el('p', { class: 'meta', text: `${chaine.orientation === 'portrait' ? 'Portrait' : 'Paysage'} · ${chaine.nb_playlists} playlist(s) programmée(s)` }),
         el('div', { class: 'actions' }, actions));
 }
 

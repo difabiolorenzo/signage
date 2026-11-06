@@ -4,8 +4,11 @@ declare(strict_types=1);
 /** Chaînes vues depuis l'éditeur (connexion requise ; écriture réservée aux administrateurs). */
 final class ControleurChaines
 {
+    /** nb_playlists : playlists programmées (plages et playlist par défaut). */
     private const COLONNES = 'c.id, c.slug, c.nom, c.orientation, c.playlist_defaut_id, c.version, c.modifie_le,
-        (SELECT COUNT(*) FROM playlists p WHERE p.chaine_id = c.id) AS nb_playlists';
+        (SELECT COUNT(DISTINCT pr.playlist_id) FROM programmations pr
+         WHERE pr.chaine_id = c.id AND pr.playlist_id <> COALESCE(c.playlist_defaut_id, 0))
+        + (c.playlist_defaut_id IS NOT NULL) AS nb_playlists';
 
     /** GET /api/chaines : toutes pour un administrateur, celles de ses droits pour un éditeur. */
     public static function liste(): never
@@ -38,7 +41,10 @@ final class ControleurChaines
         Reponse::json(['chaine' => self::lire(Db::dernierId())], 201);
     }
 
-    /** PUT /api/chaines/{id} { nom?, slug?, orientation? } (admin) */
+    /**
+     * PUT /api/chaines/{id} { nom?, slug?, orientation? } (admin) ; changer d'orientation est refusé
+     * (409) tant que des playlists de l'ancienne orientation y sont programmées.
+     */
     public static function modifier(int $id): never
     {
         $u = Auth::exigerConnexion();
@@ -46,6 +52,22 @@ final class ControleurChaines
         Droits::exigerChaine($u, $id);
         $actuelle = Db::ligne('SELECT nom, slug, orientation FROM chaines WHERE id = ?', [$id]);
         $c = self::valider(Requete::json(), $actuelle + ['id' => $id]);
+        if ($c['orientation'] !== $actuelle['orientation']) {
+            $ids = Bibliotheque::playlistsProgrammees($id);
+            $autres = [];
+            if ($ids !== []) {
+                $marques = implode(', ', array_fill(0, count($ids), '?'));
+                foreach (Db::lignes("SELECT nom, disposition FROM playlists WHERE id IN ($marques) ORDER BY nom", $ids) as $p) {
+                    if (ControleurPlaylists::orientation($p['disposition']) !== $c['orientation']) {
+                        $autres[] = $p['nom'];
+                    }
+                }
+            }
+            if ($autres !== []) {
+                Reponse::erreur('Ces playlists programmées sur la chaîne sont en ' . $actuelle['orientation'] . ' : '
+                    . implode(', ', $autres) . '. Retirez-les de la programmation avant de changer d\'orientation.', 409);
+            }
+        }
         Db::executer(
             'UPDATE chaines SET nom = ?, slug = ?, orientation = ?, version = version + 1 WHERE id = ?',
             [$c['nom'], $c['slug'], $c['orientation'], $id]
@@ -53,23 +75,16 @@ final class ControleurChaines
         Reponse::json(['chaine' => self::lire($id)]);
     }
 
-    /** DELETE /api/chaines/{id} (admin) : supprime aussi ses playlists, sa programmation et ses médias. */
+    /**
+     * DELETE /api/chaines/{id} (admin) : supprime sa programmation et ses droits. Ses playlists et
+     * médias restent dans la bibliothèque ; ceux qui n'étaient ouverts qu'à elle deviennent privés.
+     */
     public static function supprimer(int $id): never
     {
         $u = Auth::exigerConnexion();
         Droits::exigerAdmin($u);
         Droits::exigerChaine($u, $id);
-        $fichiers = Db::transaction(static function () use ($id): array {
-            $fichiers = array_column(Db::lignes('SELECT fichier FROM medias WHERE chaine_id = ?', [$id]), 'fichier');
-            Db::executer('DELETE FROM chaines WHERE id = ?', [$id]);
-            return $fichiers;
-        });
-        $dossier = dirname(__DIR__) . '/public/uploads/';
-        foreach ($fichiers as $f) {
-            if (preg_match('/^[A-Za-z0-9._-]+$/', $f) && is_file($dossier . $f)) {
-                unlink($dossier . $f);
-            }
-        }
+        Db::executer('DELETE FROM chaines WHERE id = ?', [$id]);
         Reponse::json(['ok' => true]);
     }
 

@@ -6,12 +6,15 @@ declare(strict_types=1);
  *
  * La session n'est ouverte qu'à la demande : les routes publiques (lecteur) n'envoient jamais
  * de cookie. Cookie HttpOnly, SameSite=Lax, Secure en HTTPS, limité au dossier de l'application.
+ * Chaque session retient le numéro de session du compte (utilisateurs.version_session) : un
+ * changement de mot de passe l'incrémente, ce qui ferme les sessions ouvertes avant.
  */
 final class Auth
 {
     private const NOM_SESSION = 'signage_session';
     private const CLE_UTILISATEUR = 'utilisateur_id';
     private const CLE_JETON = 'jeton_csrf';
+    private const CLE_VERSION = 'version_session';
 
     private static ?array $utilisateur = null;
 
@@ -45,12 +48,12 @@ final class Auth
         if (!is_int($id)) {
             return null;
         }
-        $u = Db::ligne('SELECT id, identifiant, nom, role, actif FROM utilisateurs WHERE id = ?', [$id]);
-        if ($u === null || (int) $u['actif'] !== 1) {
+        $u = Db::ligne('SELECT id, identifiant, nom, role, actif, version_session FROM utilisateurs WHERE id = ?', [$id]);
+        if ($u === null || (int) $u['actif'] !== 1 || (int) $u['version_session'] !== ($_SESSION[self::CLE_VERSION] ?? null)) {
             self::deconnecter();
             return null;
         }
-        unset($u['actif']);
+        unset($u['actif'], $u['version_session']);
         $u['id'] = (int) $u['id'];
         return self::$utilisateur = $u;
     }
@@ -66,8 +69,26 @@ final class Auth
     {
         self::demarrer();
         session_regenerate_id(true);
-        $_SESSION = [self::CLE_UTILISATEUR => $utilisateurId, self::CLE_JETON => bin2hex(random_bytes(32))];
+        $_SESSION = [
+            self::CLE_UTILISATEUR => $utilisateurId,
+            self::CLE_VERSION => (int) Db::valeur('SELECT version_session FROM utilisateurs WHERE id = ?', [$utilisateurId]),
+            self::CLE_JETON => bin2hex(random_bytes(32)),
+        ];
         self::$utilisateur = null;
+    }
+
+    /**
+     * Ferme toutes les sessions du compte (à appeler après un changement de mot de passe). Si
+     * c'est le compte connecté, sa session courante reste ouverte, avec un nouvel identifiant.
+     */
+    public static function fermerSessions(int $utilisateurId): void
+    {
+        Db::executer('UPDATE utilisateurs SET version_session = version_session + 1 WHERE id = ?', [$utilisateurId]);
+        self::demarrer();
+        if (($_SESSION[self::CLE_UTILISATEUR] ?? null) === $utilisateurId) {
+            session_regenerate_id(true);
+            $_SESSION[self::CLE_VERSION] = (int) Db::valeur('SELECT version_session FROM utilisateurs WHERE id = ?', [$utilisateurId]);
+        }
     }
 
     public static function deconnecter(): void

@@ -4,23 +4,46 @@ declare(strict_types=1);
 /**
  * Programmation d'une chaîne : playlist par défaut et plages horaires, lues et remplacées en
  * bloc (droit sur la chaîne requis). Le choix de la playlist en cours est fait par Programmation.
+ * Une playlist ajoutée doit pouvoir être programmée par l'utilisateur (Droits::peutProgrammer)
+ * et avoir l'orientation de la chaîne ; celles déjà programmées sont gardées telles quelles.
  */
 final class ControleurProgrammation
 {
     private const PLAGES_MAX = 200;
 
-    /** GET /api/chaines/{id}/programmation */
-    public static function lire(int $chaineId): never
+    /**
+     * GET /api/chaines/{id}/programmation ; playlists : celles qui sont programmées (nom, disposition,
+     * validité), y compris celles que l'utilisateur ne voit pas dans la bibliothèque.
+     */
+    public static function lire(int $chaineId, ?string $information = null): never
     {
-        Droits::exigerChaine(Auth::exigerConnexion(), $chaineId);
+        $u = Auth::exigerConnexion();
+        Droits::exigerChaine($u, $chaineId);
         $defaut = Db::valeur('SELECT playlist_defaut_id FROM chaines WHERE id = ?', [$chaineId]);
         $lignes = Db::lignes(
             'SELECT id, playlist_id, date_debut, date_fin, heure_debut, heure_fin, jours, priorite
              FROM programmations WHERE chaine_id = ? ORDER BY priorite DESC, id',
             [$chaineId]
         );
-        $programmation = new Programmation($lignes, $defaut === null ? null : (int) $defaut);
+        $programmation = new Programmation($lignes, $defaut === null ? null : (int) $defaut, Programmation::validitesChaine($chaineId));
         $maintenant = new DateTimeImmutable();
+        $programmees = Bibliotheque::playlistsProgrammees($chaineId);
+        $playlists = [];
+        if ($programmees !== []) {
+            $visibles = Bibliotheque::idsVisibles('playlist', $u);
+            $marques = implode(', ', array_fill(0, count($programmees), '?'));
+            foreach (Db::lignes("SELECT id, nom, disposition, valide_du, valide_au FROM playlists WHERE id IN ($marques) ORDER BY nom", $programmees) as $p) {
+                $playlists[] = [
+                    'id' => (int) $p['id'],
+                    'nom' => $p['nom'],
+                    'disposition' => $p['disposition'],
+                    'orientation' => ControleurPlaylists::orientation($p['disposition']),
+                    'valide_du' => $p['valide_du'],
+                    'valide_au' => $p['valide_au'],
+                    'visible' => in_array((int) $p['id'], $visibles, true),
+                ];
+            }
+        }
 
         Reponse::json([
             'playlist_defaut_id' => $defaut === null ? null : (int) $defaut,
@@ -39,6 +62,8 @@ final class ControleurProgrammation
                 'playlist_id' => $programmation->playlistA($maintenant),
                 'prochain_changement' => $programmation->prochainChangement($maintenant)?->format(DATE_ATOM),
             ],
+            'playlists' => $playlists,
+            'information' => $information,
         ]);
     }
 
@@ -48,13 +73,14 @@ final class ControleurProgrammation
      */
     public static function remplacer(int $chaineId): never
     {
-        Droits::exigerChaine(Auth::exigerConnexion(), $chaineId);
+        $u = Auth::exigerConnexion();
+        Droits::exigerChaine($u, $chaineId);
         $corps = Requete::json();
-        $playlists = array_map('intval', array_column(Db::lignes('SELECT id FROM playlists WHERE chaine_id = ?', [$chaineId]), 'id'));
+        $playlists = array_map('intval', array_column(Db::lignes('SELECT id FROM playlists'), 'id'));
 
         $defaut = $corps['playlist_defaut_id'] ?? null;
         if ($defaut !== null && (!is_int($defaut) || !in_array($defaut, $playlists, true))) {
-            Reponse::erreur('Playlist par défaut introuvable dans cette chaîne.', 400);
+            Reponse::erreur('Playlist par défaut introuvable.', 400);
         }
         $plages = $corps['plages'] ?? null;
         if (!is_array($plages) || !array_is_list($plages) || count($plages) > self::PLAGES_MAX) {
@@ -65,7 +91,32 @@ final class ControleurProgrammation
             $propres[] = self::plage($p, $i + 1, $playlists);
         }
 
-        Db::transaction(static function () use ($chaineId, $defaut, $propres): void {
+        // Playlists ajoutées à la programmation : droit de les programmer et même orientation.
+        $nouvelles = array_diff(
+            array_unique(array_merge(array_column($propres, 'playlist_id'), $defaut === null ? [] : [$defaut])),
+            Bibliotheque::playlistsProgrammees($chaineId)
+        );
+        $orientation = (string) Db::valeur('SELECT orientation FROM chaines WHERE id = ?', [$chaineId]);
+        $aOuvrir = [];
+        foreach ($nouvelles as $id) {
+            $p = Bibliotheque::trouver('playlist', $id);
+            if (!Droits::peutProgrammer($u, $p, $p['acces'], $chaineId)) {
+                Reponse::erreur("Vous ne pouvez pas programmer « {$p['nom']} » sur cette chaîne.", 403);
+            }
+            $orientationPlaylist = ControleurPlaylists::orientation($p['disposition']);
+            if ($orientationPlaylist !== $orientation) {
+                Reponse::erreur("« {$p['nom']} » est une playlist $orientationPlaylist : elle ne peut pas passer sur une chaîne en $orientation.", 400);
+            }
+            if ($p['portee'] !== 'globale' && !in_array($chaineId, $p['acces']['chaines'], true)) {
+                $aOuvrir[$id] = $p['nom'];
+            }
+        }
+
+        Db::transaction(static function () use ($chaineId, $defaut, $propres, $aOuvrir): void {
+            // Invariant de diffusion (voir Bibliotheque) : la chaîne entre dans la portée.
+            foreach (array_keys($aOuvrir) as $id) {
+                Bibliotheque::ajouterChaine('playlist', $id, $chaineId);
+            }
             Db::executer('DELETE FROM programmations WHERE chaine_id = ?', [$chaineId]);
             foreach ($propres as $p) {
                 Db::executer(
@@ -76,7 +127,8 @@ final class ControleurProgrammation
             }
             Db::executer('UPDATE chaines SET playlist_defaut_id = ?, version = version + 1 WHERE id = ?', [$defaut, $chaineId]);
         });
-        self::lire($chaineId);
+        self::lire($chaineId, $aOuvrir === [] ? null
+            : 'Cette chaîne a été ajoutée à la portée de : ' . implode(', ', $aOuvrir) . '.');
     }
 
     /** Plage vérifiée ; réponse 400 avec le numéro de la plage sinon. */
@@ -90,7 +142,7 @@ final class ControleurProgrammation
         }
         $playlist = $p['playlist_id'] ?? null;
         if (!is_int($playlist) || !in_array($playlist, $playlists, true)) {
-            $erreur('playlist introuvable dans cette chaîne.');
+            $erreur('playlist introuvable.');
         }
         $date = static function (mixed $v) use ($erreur): ?string {
             if ($v === null || $v === '') {
