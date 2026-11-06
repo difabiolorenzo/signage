@@ -1,0 +1,83 @@
+/* Lecteur public : liste des chaînes et affichage plein écran. */
+
+html, body { margin: 0; height: 100%; }
+
+/* Liste des chaînes */
+.page-liste { font-family: system-ui, sans-serif; color: #1d2327; background: #f4f6f8; line-height: 1.5; }
+.liste { max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+.liste ul { padding: 0; list-style: none; }
+.liste li { padding: .6rem 0; border-bottom: 1px solid #dde3e8; }
+.liste a { font-weight: 600; color: #0b6fb8; }
+.liste code { margin-left: .5rem; color: #5f6b72; }
+
+/* Lecteur */
+.page-lecteur { background: #000; color: #fff; overflow: hidden; cursor: none; font-family: system-ui, sans-serif; }
+#scene { position: fixed; inset: 0; overflow: hidden; --echelle: 1; }
+.page { position: absolute; inset: 0; background: #000; }
+.region { position: absolute; overflow: hidden; }
+.message {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 2rem; text-align: center; font-size: 2rem; color: #ccc; background: #000;
+}
+.message[hidden] { display: none; }
+
+/* Texte, RSS : statique ou défilant */
+.texte { position: absolute; inset: 0; overflow: hidden; line-height: 1.25; }
+.texte.statique { display: flex; align-items: center; justify-content: center; text-align: center; white-space: pre-wrap; overflow-wrap: anywhere; }
+.texte.defile-h .texte-contenu { position: absolute; left: 0; top: 50%; white-space: pre; will-change: transform; }
+.texte.defile-v .texte-contenu { position: absolute; left: 0; top: 0; width: 100%; text-align: center; white-space: pre-wrap; overflow-wrap: anywhere; will-change: transform; }
+
+/* Texte mis en forme (Markdown ou éditeur de mise en forme) */
+.texte.texte-riche, .texte.texte-riche .texte-contenu { white-space: normal; }
+.texte.statique.texte-riche .texte-contenu { width: 100%; max-height: 100%; }
+.texte-riche p, .texte-riche h1, .texte-riche h2, .texte-riche h3, .texte-riche h4, .texte-riche h5, .texte-riche h6,
+.texte-riche ul, .texte-riche ol, .texte-riche blockquote, .texte-riche pre, .texte-riche table { margin: .25em 0; }
+.texte-riche .texte-contenu > :first-child { margin-top: 0; }
+.texte-riche .texte-contenu > :last-child { margin-bottom: 0; }
+.texte-riche h1 { font-size: 2em; }
+.texte-riche h2 { font-size: 1.6em; }
+.texte-riche h3 { font-size: 1.3em; }
+.texte-riche h4, .texte-riche h5, .texte-riche h6 { font-size: 1.1em; }
+.texte-riche ul, .texte-riche ol { display: inline-block; padding-left: 1.3em; text-align: left; }
+.texte-riche blockquote { padding-left: .6em; border-left: .15em solid currentColor; opacity: .85; }
+.texte-riche code, .texte-riche pre { font-family: ui-monospace, Consolas, monospace; }
+.texte-riche table { border-collapse: collapse; margin-left: auto; margin-right: auto; }
+.texte-riche th, .texte-riche td { padding: .1em .5em; border: 1px solid currentColor; }
+.texte-riche hr { border: 0; border-top: .08em solid currentColor; }
+/* Défilement horizontal : tout le contenu sur une ligne. */
+.texte.defile-h.texte-riche .texte-contenu { white-space: nowrap; }
+.texte.defile-h.texte-riche .texte-contenu * { display: inline; margin: 0; padding: 0; border: 0; }
+.texte.defile-h.texte-riche .texte-contenu :is(p, div, h1, h2, h3, h4, h5, h6, li, blockquote, pre, tr) { margin-right: 1.5em; }
+.texte.defile-h.texte-riche .texte-contenu li::before { content: "• "; }
+
+/* Horloge, date, compte à rebours, météo, QR */
+.bloc { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: .2em; line-height: 1.15; overflow: hidden; }
+.bloc .ligne { white-space: nowrap; }
+.bloc .grand { font-size: 1.6em; font-weight: 600; }
+.bloc .petit { font-size: .6em; opacity: .85; }
+.cadran { width: 100%; flex: 1 1 auto; min-height: 0; }
+.qr-code { flex: 1 1 auto; min-height: 0; max-width: 100%; background: #fff; }
+.qr .petit { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* Page web, YouTube */
+.cadre { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+
+/* Images / vidéos et transitions */
+.media-element { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.entree-fondu { animation: fondu 1s ease both; }
+.entree-zoom { animation: zoom 1s ease both; }
+.entree-ken_burns { animation: fondu 1s ease both, ken-burns var(--duree, 10s) linear both; }
+.entree-retournement { animation: retournement 1s ease both; }
+.entree-arrivee { animation: arrivee 1s ease both; }
+.entree-flottement { animation: flottement 1.2s ease both; }
+.entree-rotation { animation: rotation 1s ease both; }
+.sortie { z-index: 1; animation: sortie 1s ease both; }
+
+@keyframes fondu { from { opacity: 0; } to { opacity: 1; } }
+@keyframes zoom { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
+@keyframes ken-burns { from { transform: scale(1); } to { transform: scale(1.15); } }
+@keyframes retournement { from { transform: perspective(1500px) rotateY(90deg); } to { transform: perspective(1500px) rotateY(0); } }
+@keyframes arrivee { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes flottement { from { opacity: 0; transform: translateY(12%); } to { opacity: 1; transform: none; } }
+@keyframes rotation { from { opacity: 0; transform: rotate(-90deg) scale(.4); } to { opacity: 1; transform: none; } }
+@keyframes sortie { from { transform: none; } to { transform: translateX(-100%); } }

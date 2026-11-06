@@ -1,0 +1,7 @@
+# Scripts et styles : le navigateur revérifie à chaque chargement (réponse 304 si rien n'a
+# changé), pour qu'une mise à jour de l'application soit prise en compte sans vider le cache.
+<IfModule mod_headers.c>
+    <FilesMatch "\.(js|css)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>

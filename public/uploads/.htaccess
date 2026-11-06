@@ -1,0 +1,16 @@
+# Médias envoyés : servis comme des fichiers, jamais exécutés.
+Options -Indexes -ExecCGI
+RemoveHandler .php .phtml .phar
+RemoveType .php .phtml .phar
+<FilesMatch "\.(php\d?|phtml|phar|cgi|pl|py|sh)$">
+    Require all denied
+</FilesMatch>
+<IfModule php_module>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>

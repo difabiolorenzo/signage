@@ -1,0 +1,6 @@
+# Toutes les routes de l'API passent par index.php (/api/public/slug -> index.php).
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [L]
+</IfModule>

@@ -1,0 +1,5 @@
+/_archive/
+/docs/
+/config/config.php
+/public/uploads/*
+!/public/uploads/.htaccess
