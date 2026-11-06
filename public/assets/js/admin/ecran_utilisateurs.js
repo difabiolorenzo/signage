@@ -1,4 +1,4 @@
-// Écran « Utilisateurs » (administrateurs) : création, nom et rôle, désactivation,
+// Écran « Utilisateurs » (administrateurs) : création, identifiant, nom et rôle, désactivation,
 // nouveau mot de passe, chaînes que chaque éditeur peut modifier. L'API vérifie tout.
 
 import { basculeMotDePasse } from '../commun/mot_de_passe.js';
@@ -47,8 +47,15 @@ function selectRole(role) {
         el('option', { value: 'admin', text: 'Administrateur : tout, y compris les comptes', selected: role === 'admin' }));
 }
 
+/** Mêmes règles que ControleurUtilisateurs::identifiant (l'unicité est vérifiée par l'API). */
+export const AIDE_IDENTIFIANT = 'Lettres sans accent, chiffres, point, tiret ; 3 caractères au moins.';
+
+export function champIdentifiant(valeur = '') {
+    return el('input', { required: true, maxlength: 64, pattern: '[A-Za-z0-9._\\-]{3,64}', autocomplete: 'off', spellcheck: 'false', value: valeur });
+}
+
 function nouvelUtilisateur() {
-    const identifiant = el('input', { required: true, maxlength: 64, pattern: '[A-Za-z0-9._\\-]{3,64}', autocomplete: 'off', spellcheck: 'false' });
+    const identifiant = champIdentifiant();
     const nom = el('input', { maxlength: 100 });
     const role = selectRole('editeur');
     const mdp = champMotDePasse();
@@ -56,7 +63,7 @@ function nouvelUtilisateur() {
         titre: 'Nouvel utilisateur',
         texteValider: 'Créer',
         corps: [
-            champ('Identifiant', identifiant, 'Lettres sans accent, chiffres, point, tiret ; 3 caractères au moins.'),
+            champ('Identifiant', identifiant, AIDE_IDENTIFIANT),
             champ('Nom affiché', nom),
             champ('Rôle', role),
             champ('Mot de passe', mdp.bloc, 'Communiquez-le à la personne : il ne sera plus affiché ensuite.'),
@@ -71,7 +78,8 @@ function nouvelUtilisateur() {
     });
 }
 
-function modifierUtilisateur(u, estMoi) {
+function modifierUtilisateur(u, estMoi, contexte) {
+    const identifiant = champIdentifiant(u.identifiant);
     const nom = el('input', { maxlength: 100, value: u.nom });
     const role = selectRole(u.role);
     if (estMoi) {
@@ -81,11 +89,16 @@ function modifierUtilisateur(u, estMoi) {
         titre: `Modifier ${u.identifiant}`,
         texteValider: 'Enregistrer',
         corps: [
+            champ('Identifiant de connexion', identifiant, `${AIDE_IDENTIFIANT} Les sessions ouvertes restent valides.`),
             champ('Nom affiché', nom),
             champ('Rôle', role, estMoi ? 'Vous ne pouvez pas retirer votre propre rôle d\'administrateur.' : null),
         ],
         valider: async () => {
-            await api.put(`/utilisateurs/${u.id}`, estMoi ? { nom: nom.value } : { nom: nom.value, role: role.value });
+            const corps = { identifiant: identifiant.value.trim(), nom: nom.value };
+            await api.put(`/utilisateurs/${u.id}`, estMoi ? corps : { ...corps, role: role.value });
+            if (estMoi) {
+                contexte.majUtilisateur(corps);
+            }
             return true;
         },
     });
@@ -192,7 +205,7 @@ export async function afficher(ecran, contexte) {
             el('td', {}, droits),
             el('td', { class: 'meta', text: dateCourte(u.cree_le) }),
             el('td', { class: 'actions-ligne' },
-                action('Modifier', () => modifierUtilisateur(u, estMoi), 'Utilisateur enregistré.'),
+                action('Modifier', () => modifierUtilisateur(u, estMoi, contexte), 'Utilisateur enregistré.'),
                 u.role !== 'admin' && action('Chaînes…', () => choisirChaines(u, chaines), 'Droits enregistrés.'),
                 !estMoi && action('Transférer…', () => transferer(u, utilisateurs), 'Playlists et médias transférés.'),
                 action('Mot de passe…', () => nouveauMotDePasse(u), `Mot de passe de ${u.identifiant} changé.`),

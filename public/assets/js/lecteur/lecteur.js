@@ -24,6 +24,7 @@ let minuteurChangement = null;
 const contexte = {
     maintenant: () => new Date(Date.now() + decalageHorloge),
     urlApi,
+    meteoRelais: false, // météo par le relais du serveur (réglage du panneau d'administration)
 };
 
 function montrerMessage(texte) {
@@ -43,6 +44,7 @@ function mettreAEchelle() {
 
 function appliquer(nouvelles) {
     donnees = nouvelles;
+    contexte.meteoRelais = nouvelles.meteo_relais === true;
     enAttente = null;
     indexPage = 0;
     mettreAEchelle();

@@ -167,7 +167,7 @@ export async function afficher(ecran, contexte, chaineId) {
     }
 
     ecran.replaceChildren(contexte.cadre({
-        ...ongletsChaine(chaine, 'playlists'),
+        ...ongletsChaine(chaine, 'playlists', contexte),
         barre,
         contenu,
     }));

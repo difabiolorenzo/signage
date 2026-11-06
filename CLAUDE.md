@@ -26,7 +26,7 @@ Gestion de **chaînes** d'affichage dynamique : des utilisateurs composent des p
 | `public/api/index.php` | API JSON, point d'entrée unique |
 | `public/assets/js/commun/` | Dispositions, widgets et valeurs par défaut, partagés par l'éditeur et le lecteur |
 | `public/assets/js/lecteur/`, `public/assets/js/admin/` | Lecteur, écrans de l'éditeur |
-| `public/uploads/` | Médias envoyés ; ignoré par git ; PHP interdit par `.htaccess` |
+| `public/uploads/` | Médias envoyés, vignettes dans `vignettes/` ; ignoré par git ; PHP interdit par `.htaccess` |
 | `app/` | Code PHP hors racine web : `Db`, `Auth`, `Droits`, contrôleurs de l'API |
 | `config/` | `config.example.php` (versionné) ; `config.php` (identifiants, ignoré par git) |
 | `sql/` | `schema.sql`, `migrations/` numérotées |
@@ -46,7 +46,7 @@ Gestion de **chaînes** d'affichage dynamique : des utilisateurs composent des p
 6. **JSON des pages** (`playlists.pages`) : porte `format: 1`. Changer sa structure impose d'incrémenter `format` et de convertir les anciennes playlists à la lecture.
 7. **Dispositions** : une playlist enregistre le nom de sa disposition et ses régions calculées ; ne pas renommer une disposition de `dispositions.js` sans garder l'ancien nom reconnu.
 8. **Lecteur public** : il ne doit jamais demander de connexion ni exposer autre chose que le contenu de la chaîne (pas d'identifiant, pas de nom d'utilisateur).
-9. **Médias** : types autorisés vérifiés avec `finfo`, nom de fichier aléatoire sur disque, taille maximale de `config.php`.
+9. **Médias** : types autorisés vérifiés avec `finfo`, nom de fichier aléatoire sur disque, taille maximale réglée dans l'écran Administration (`Parametres::envoiMaxOctets`, défaut dans `config.php`).
 10. **Publication** : ne jamais introduire dans le dépôt de nom de logiciel tiers, d'adresse de binaire (`0x…`), de capture d'un autre logiciel ni de fichier de `_archive/`.
 
 ## Vérifications

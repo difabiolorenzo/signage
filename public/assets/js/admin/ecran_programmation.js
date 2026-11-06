@@ -217,7 +217,7 @@ export async function afficher(ecran, contexte, chaineId) {
 
     contexte.surQuitter(demarrer());
     ecran.replaceChildren(contexte.cadre({
-        ...ongletsChaine(chaine, 'programmation'),
+        ...ongletsChaine(chaine, 'programmation', contexte),
         barre: [
             el('h1', { text: 'Programmation' }),
             playlists.length > 0 && el('button', {

@@ -54,6 +54,8 @@ final class ControleurPublic
             'maintenant' => $maintenant->format(DATE_ATOM),
             'prochain_changement' => $prochain?->format(DATE_ATOM),
             'playlist' => $playlist === null ? null : self::playlistPublique($playlist),
+            // Météo par le relais du serveur (service à clé d'API) plutôt qu'en direct.
+            'meteo_relais' => Parametres::meteoRelais(),
         ]);
     }
 
@@ -72,7 +74,7 @@ final class ControleurPublic
         if ($chaineId === null) {
             Reponse::erreur('Chaîne introuvable.', 404);
         }
-        if (!self::fluxUtilise((int) $chaineId, $url)) {
+        if (!self::widgetUtilise((int) $chaineId, 'rss', 'url', $url)) {
             Reponse::erreur("Ce flux n'est utilisé par aucune playlist programmée sur la chaîne.", 403);
         }
 
@@ -93,7 +95,51 @@ final class ControleurPublic
         }
     }
 
-    private static function fluxUtilise(int $chaineId, string $url): bool
+    /**
+     * GET /api/public/{slug}/meteo?ville=&jours=&celsius= : météo d'une ville par le service à clé
+     * d'API (la clé reste sur le serveur). Mêmes protections que le relais RSS : seulement les villes
+     * d'un widget Météo d'une playlist programmée sur la chaîne ; cache de 15 minutes, dernier
+     * résultat servi si le service ne répond plus.
+     */
+    public static function meteo(string $slug): never
+    {
+        $ville = $_GET['ville'] ?? '';
+        $jours = filter_var($_GET['jours'] ?? '', FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 7]]);
+        $celsius = ($_GET['celsius'] ?? '1') !== '0';
+        if (!is_string($ville) || trim($ville) === '' || mb_strlen($ville) > 100 || $jours === false) {
+            Reponse::erreur('Paramètres ville ou jours manquants ou invalides.', 400);
+        }
+        $ville = trim($ville);
+        $chaineId = Db::valeur('SELECT id FROM chaines WHERE slug = ?', [$slug]);
+        if ($chaineId === null) {
+            Reponse::erreur('Chaîne introuvable.', 404);
+        }
+        if (!Parametres::meteoRelais()) {
+            Reponse::erreur('Relais météo désactivé : le lecteur interroge le service directement.', 404);
+        }
+        if (!self::widgetUtilise((int) $chaineId, 'meteo', 'ville', $ville)) {
+            Reponse::erreur("Cette ville n'est utilisée par aucune playlist programmée sur la chaîne.", 403);
+        }
+
+        $cache = sys_get_temp_dir() . '/signage-meteo-' . sha1("$ville|" . ($celsius ? 'C' : 'F') . "|$jours") . '.json';
+        if (is_file($cache) && filemtime($cache) > time() - 900) {
+            Reponse::json(json_decode((string) file_get_contents($cache), true));
+        }
+        try {
+            $resultat = RelaisMeteo::previsions($ville, $celsius, $jours, Parametres::get('meteo_cle'));
+            file_put_contents($cache, json_encode($resultat, JSON_UNESCAPED_UNICODE), LOCK_EX);
+            Reponse::json($resultat);
+        } catch (RuntimeException $e) {
+            error_log("Météo $ville : " . $e->getMessage()); // jamais l'adresse appelée : elle contient la clé
+            if (is_file($cache)) {
+                Reponse::json(json_decode((string) file_get_contents($cache), true));
+            }
+            Reponse::erreur('Météo indisponible.', 502);
+        }
+    }
+
+    /** Un widget $type d'une playlist programmée sur la chaîne a-t-il $champ égal à $valeur ? */
+    private static function widgetUtilise(int $chaineId, string $type, string $champ, string $valeur): bool
     {
         $ids = Bibliotheque::playlistsProgrammees($chaineId);
         if ($ids === []) {
@@ -103,7 +149,8 @@ final class ControleurPublic
         foreach (Db::lignes("SELECT id, pages FROM playlists WHERE id IN ($marques)", $ids) as $playlist) {
             foreach (Pages::lire((string) $playlist['pages'], (int) $playlist['id']) as $page) {
                 foreach (is_array($page['widgets'] ?? null) ? $page['widgets'] : [] as $widget) {
-                    if (is_array($widget) && ($widget['type'] ?? null) === 'rss' && ($widget['url'] ?? null) === $url) {
+                    if (is_array($widget) && ($widget['type'] ?? null) === $type && is_string($widget[$champ] ?? null)
+                        && trim($widget[$champ]) === trim($valeur)) {
                         return true;
                     }
                 }

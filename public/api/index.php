@@ -10,6 +10,8 @@ Reponse::capturerErreurs();
 if (!Config::existe()) {
     Reponse::erreur('Application non installée.', 503);
 }
+// Connexion dès maintenant : elle applique le fuseau du panneau d'administration avant tout calcul de date.
+Db::pdo();
 
 /** Chemin de la route, sans le dossier de l'API : « /public/restaurant ». */
 function cheminRoute(): string
@@ -33,11 +35,15 @@ const ID = '([1-9][0-9]{0,9})';
 $routes = [
     ['GET', '#^/public/' . SLUG . '$#', [ControleurPublic::class, 'chaine']],
     ['GET', '#^/public/' . SLUG . '/rss$#', [ControleurPublic::class, 'rss']],
+    ['GET', '#^/public/' . SLUG . '/meteo$#', [ControleurPublic::class, 'meteo']],
+    ['GET', '#^/parametres$#', [ControleurParametres::class, 'lire']],
+    ['PUT', '#^/parametres$#', [ControleurParametres::class, 'modifier']],
     ['POST', '#^/connexion$#', [ControleurSession::class, 'connexion']],
     ['POST', '#^/deconnexion$#', [ControleurSession::class, 'deconnexion']],
     ['GET', '#^/moi$#', [ControleurSession::class, 'moi']],
     ['PUT', '#^/moi$#', [ControleurSession::class, 'modifierMoi']],
     ['PUT', '#^/moi/mot_de_passe$#', [ControleurSession::class, 'changerMotDePasse']],
+    ['PUT', '#^/moi/identifiant$#', [ControleurSession::class, 'changerIdentifiant']],
     ['GET', '#^/chaines$#', [ControleurChaines::class, 'liste']],
     ['POST', '#^/chaines$#', [ControleurChaines::class, 'creer']],
     ['GET', '#^/chaines/' . ID . '$#', fn (string $id) => ControleurChaines::detail((int) $id)],
@@ -52,6 +58,7 @@ $routes = [
     ['GET', '#^/medias$#', [ControleurMedias::class, 'liste']],
     ['POST', '#^/medias$#', [ControleurMedias::class, 'envoyer']],
     ['DELETE', '#^/medias/' . ID . '$#', fn (string $m) => ControleurMedias::supprimer((int) $m)],
+    ['POST', '#^/medias/' . ID . '/vignette$#', fn (string $m) => ControleurMedias::regenererVignette((int) $m)],
     ['GET', '#^/(playlist|media)s/' . ID . '/portee$#', fn (string $t, string $id) => ControleurBibliotheque::lirePortee($t, (int) $id)],
     ['PUT', '#^/(playlist|media)s/' . ID . '/portee$#', fn (string $t, string $id) => ControleurBibliotheque::modifierPortee($t, (int) $id)],
     ['PUT', '#^/(playlist|media)s/' . ID . '/auteur$#', fn (string $t, string $id) => ControleurBibliotheque::modifierAuteur($t, (int) $id)],

@@ -9,13 +9,15 @@ import {
     TRANSITIONS, TYPES_WIDGETS, VITESSES, widgetParDefaut,
 } from '../commun/widgets.js';
 import { urlWeb } from '../lecteur/outils.js';
+import { creer as creerWidgetMedia } from '../lecteur/widgets/media.js';
 import { formaterDate } from '../lecteur/widgets/horloge.js';
 import { JOURS_METEO, MODELES_METEO } from '../lecteur/widgets/meteo.js';
 import { FORMES_QR, problemeLisibilite, QR_DEFAUTS } from '../lecteur/widgets/qr.js';
 import { identifiantVideo } from '../lecteur/widgets/youtube.js';
 import { htmlMarkdown, htmlTexteSimple, MODES_TEXTE, modeTexte } from '../commun/texte_riche.js';
-import { el } from './dom.js';
+import { duree as dureeTexte, el } from './dom.js';
 import { editeurRiche } from './editeur_riche.js';
+import { adresseVignette, descriptionMedia } from './envoi_medias.js';
 
 const FORMATS_DATE = ['%Y.%m.%d %A', '%d/%m/%Y', '%Y-%m-%d', '%A %d %B %Y', '%A %e %B'];
 const FOND_PAR_DEFAUT = '#142228';
@@ -251,60 +253,237 @@ function reglagesTexte(w, f) {
     return [ligne('Mode', choix), ...saisie];
 }
 
+// Élément à remettre au focus après le redessin du panneau (déplacement ou retrait au clavier) :
+// { index, bouton: 'monter' | 'descendre' | 'retirer' | 'ajouter' }.
+let focusApres = null;
+// Démonstration de la transition en cours (une seule à la fois : le panneau est redessiné souvent).
+let demo = null;
+
+/** Deux images de démonstration (paysage 4:3), pour montrer transition et mise à l'échelle. */
+function imageDemo(fond, soleil) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><rect width="400" height="300" fill="${fond}"/>`
+        + `<circle cx="300" cy="80" r="45" fill="${soleil}"/><path d="M0 300 140 120 240 230 300 170 400 300z" fill="#1d3b2a"/></svg>`;
+    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+const IMAGES_DEMO = [imageDemo('#5aa9e6', '#ffe066'), imageDemo('#f4a261', '#fff3b0')];
+
+/**
+ * Petit aperçu animé de l'effet : le widget du lecteur lui-même, avec deux images de
+ * démonstration, la transition et la mise à l'échelle choisies.
+ */
+function schemaEffet(w) {
+    demo?.detruire();
+    const boite = el('div', { class: 'schema-effet', role: 'img', 'aria-label': 'Aperçu de la transition et de la mise à l\'échelle choisies' });
+    const instance = creerWidgetMedia(boite, {
+        elements: IMAGES_DEMO.map((url) => ({ url, type: 'image/svg+xml', duree: 2 })),
+        transition: w.transition,
+        echelle: w.echelle,
+    });
+    // Arrêt quand le panneau est remplacé (le minuteur du widget continuerait sinon).
+    const surveillance = setInterval(() => {
+        if (!boite.isConnected) {
+            arreter();
+        }
+    }, 1000);
+    const arreter = () => {
+        clearInterval(surveillance);
+        instance?.detruire();
+        if (demo?.boite === boite) {
+            demo = null;
+        }
+    };
+    demo = { boite, detruire: arreter };
+    return boite;
+}
+
+/**
+ * Widget Images / Vidéos : liste réordonnable (glisser-déposer par la poignée, ou boutons Monter /
+ * Descendre qui gardent le focus), vignette agrandie au survol et au focus, durée des images,
+ * durée réelle des vidéos (le lecteur les passe jusqu'au bout), puis réglages communs.
+ */
 function reglagesMedia(w, f, medias) {
     w.elements = Array.isArray(w.elements) ? w.elements : [];
     const parId = new Map(medias.map((m) => [m.id, m]));
     const modifie = f.modifieStructure;
+    const estVideo = (e) => String(parId.get(e.media)?.type ?? '').startsWith('video/');
 
-    const lignes = w.elements.map((e, i) => el('li', { class: 'element-media' },
-        el('span', { class: 'nom-media', title: parId.get(e.media)?.nom ?? '', text: parId.get(e.media)?.nom ?? `Média ${e.media} (introuvable)` }),
-        ...f.nombre(e, 'duree', { min: 1, max: 86400, suffixe: 's', defaut: DUREE_MEDIA }),
-        el('button', { type: 'button', class: 'mini', title: 'Monter', text: '↑', disabled: i === 0, onclick: () => { [w.elements[i - 1], w.elements[i]] = [w.elements[i], w.elements[i - 1]]; modifie(); } }),
-        el('button', { type: 'button', class: 'mini', title: 'Descendre', text: '↓', disabled: i === w.elements.length - 1, onclick: () => { [w.elements[i + 1], w.elements[i]] = [w.elements[i], w.elements[i + 1]]; modifie(); } }),
-        el('button', { type: 'button', class: 'mini', title: 'Retirer', text: '×', onclick: () => { w.elements.splice(i, 1); modifie(); } })));
+    const deplacer = (de, vers, bouton) => {
+        const [element] = w.elements.splice(de, 1);
+        w.elements.splice(vers, 0, element);
+        focusApres = bouton && { index: vers, bouton };
+        modifie();
+    };
 
-    let ajout;
-    const insertables = medias.filter((m) => m.accessible !== false);
-    if (insertables.length === 0) {
-        ajout = f.aide('Aucun média disponible pour le moment.');
-    } else {
-        const select = el('select', {}, insertables.map((m) => el('option', { value: m.id, text: m.nom })));
-        ajout = el('div', { class: 'ajout-media' }, select, el('button', {
-            type: 'button', class: 'bouton', text: 'Ajouter',
-            onclick: () => {
-                w.elements.push(elementMediaParDefaut(Number(select.value)));
+    let glisse = null; // index de l'élément saisi par sa poignée
+    const lignes = w.elements.map((e, i) => {
+        const m = parId.get(e.media);
+        const nom = m?.nom ?? `Média ${e.media} (introuvable)`;
+        const adresse = m ? adresseVignette(m) : null;
+        const video = estVideo(e);
+        const dernier = i === w.elements.length - 1;
+
+        let duree;
+        if (video) {
+            duree = el('span', { class: 'duree-video', text: m?.duree ? `${dureeTexte(m.duree)}, jusqu'au bout` : "jusqu'au bout" });
+        } else {
+            const [entree] = f.nombre(e, 'duree', { min: 1, max: 86400, defaut: DUREE_MEDIA });
+            entree.setAttribute('aria-label', `Durée d'affichage de ${nom}, en secondes`);
+            duree = el('span', { class: 'duree-image' }, entree, el('span', { class: 'suffixe', text: 's', 'aria-hidden': 'true' }));
+        }
+        const bouton = (action, texte, libelle, desactive, surClic) => el('button', {
+            type: 'button', class: 'mini', text: texte, 'aria-label': libelle, title: libelle, disabled: desactive, dataset: { action }, onclick: surClic,
+        });
+
+        const poignee = el('span', { class: 'poignee-element', title: 'Glisser pour déplacer', 'aria-hidden': 'true', text: '⠿' });
+        const li = el('li', { class: 'element-media', dataset: { index: String(i) } },
+            poignee,
+            el('span', { class: 'vignette-element' },
+                adresse ? el('img', { src: adresse, alt: nom, loading: 'lazy' }) : el('span', { class: 'vignette-vide', text: video ? 'Vidéo' : '?' }),
+                adresse && el('span', { class: 'apercu-grand', 'aria-hidden': 'true', hidden: true }, el('img', { src: adresse, alt: '' }))),
+            el('span', { class: 'infos-element' },
+                el('span', { class: 'nom-media', title: nom, text: nom }),
+                el('span', { class: 'meta', text: m ? descriptionMedia(m) : 'Introuvable' }),
+                duree),
+            el('span', { class: 'boutons-element' },
+                bouton('monter', '↑', `Monter ${nom}`, i === 0, () => deplacer(i, i - 1, 'monter')),
+                bouton('descendre', '↓', `Descendre ${nom}`, dernier, () => deplacer(i, i + 1, 'descendre')),
+                bouton('retirer', '×', `Retirer ${nom}`, false, () => {
+                    w.elements.splice(i, 1);
+                    focusApres = w.elements.length === 0 ? { bouton: 'ajouter' } : { index: Math.min(i, w.elements.length - 1), bouton: 'retirer' };
+                    modifie();
+                })));
+
+        // Aperçu agrandi au survol et au focus, à gauche du panneau (position fixe : le panneau
+        // défile et couperait un élément positionné dans la liste).
+        const grand = li.querySelector('.apercu-grand');
+        if (grand) {
+            const montrer = () => {
+                const cadre = li.getBoundingClientRect();
+                grand.style.left = `${Math.max(8, cadre.left - 256)}px`;
+                grand.style.top = `${Math.max(8, Math.min(cadre.top, innerHeight - 200))}px`;
+                grand.hidden = glisse !== null;
+            };
+            const cacher = () => {
+                grand.hidden = !li.matches(':hover') && !li.contains(document.activeElement);
+            };
+            li.addEventListener('mouseenter', montrer);
+            li.addEventListener('focusin', montrer);
+            li.addEventListener('mouseleave', cacher);
+            li.addEventListener('focusout', () => setTimeout(cacher));
+        }
+
+        // Glisser-déposer : seulement depuis la poignée, pour garder la saisie de la durée.
+        poignee.addEventListener('pointerdown', () => { li.draggable = true; });
+        poignee.addEventListener('pointerup', () => { li.draggable = false; });
+        li.addEventListener('dragstart', (ev) => {
+            glisse = i;
+            ev.dataTransfer.effectAllowed = 'move';
+            ev.dataTransfer.setData('text/plain', String(i));
+            li.classList.add('glisse');
+            if (grand) {
+                grand.hidden = true;
+            }
+        });
+        li.addEventListener('dragend', () => {
+            li.draggable = false;
+            li.classList.remove('glisse');
+            glisse = null;
+        });
+        li.addEventListener('dragover', (ev) => {
+            if (glisse === null || glisse === i) {
+                return;
+            }
+            ev.preventDefault();
+            const cadre = li.getBoundingClientRect();
+            const apres = ev.clientY - cadre.top > cadre.height / 2;
+            li.classList.toggle('cible-avant', !apres);
+            li.classList.toggle('cible-apres', apres);
+        });
+        li.addEventListener('dragleave', () => li.classList.remove('cible-avant', 'cible-apres'));
+        li.addEventListener('drop', (ev) => {
+            ev.preventDefault();
+            const apres = li.classList.contains('cible-apres');
+            li.classList.remove('cible-avant', 'cible-apres');
+            if (glisse === null) {
+                return;
+            }
+            let vers = apres ? i + 1 : i;
+            if (glisse < vers) {
+                vers--;
+            }
+            if (vers !== glisse) {
+                deplacer(glisse, vers, null);
+            }
+        });
+        return li;
+    });
+
+    const boutonAjouter = el('button', {
+        type: 'button', class: 'bouton', text: '+ Ajouter des médias', dataset: { action: 'ajouter' },
+        onclick: async () => {
+            const choisis = await f.ajouterMedias();
+            if (choisis.length > 0) {
+                w.elements.push(...choisis.map((m) => elementMediaParDefaut(m.id)));
+                focusApres = { bouton: 'ajouter' };
                 modifie();
-            },
-        }));
+            }
+        },
+    });
+
+    const liste = w.elements.length === 0
+        ? f.aide('Aucun fichier : ajoutez des images ou des vidéos.')
+        : el('ol', { class: 'liste-medias', 'aria-label': 'Ordre de passage des médias' }, lignes);
+
+    // Focus rendu après le redessin (le panneau est attaché au document juste après ce retour).
+    if (focusApres) {
+        const cible = focusApres;
+        focusApres = null;
+        setTimeout(() => {
+            if (cible.bouton === 'ajouter') {
+                boutonAjouter.focus();
+                return;
+            }
+            const li = lignes[cible.index];
+            const b = li?.querySelector(`[data-action="${cible.bouton}"]`);
+            // Arrivé en haut ou en bas, le bouton utilisé est désactivé : on prend l'autre.
+            const autre = li?.querySelector(`[data-action="${cible.bouton === 'monter' ? 'descendre' : 'monter'}"]`);
+            (b && !b.disabled ? b : autre && !autre.disabled ? autre : li?.querySelector('button'))?.focus();
+        });
     }
 
-    const toutes = { duree: w.elements[0]?.duree ?? DUREE_MEDIA };
+    const images = w.elements.filter((e) => !estVideo(e));
+    const toutes = { duree: images[0]?.duree ?? DUREE_MEDIA };
     const [champToutes] = f.nombre(toutes, 'duree', { min: 1, max: 86400, defaut: DUREE_MEDIA });
     champToutes.addEventListener('change', () => {
         if (!champToutes.classList.contains('invalide')) {
-            w.elements.forEach((e) => { e.duree = toutes.duree; });
+            images.forEach((e) => { e.duree = toutes.duree; });
             modifie();
         }
     });
 
     return [
         el('h4', { text: 'Fichiers' }),
-        w.elements.length === 0 ? f.aide('Aucun fichier : ajoutez des images ou des vidéos.') : el('ol', { class: 'liste-medias' }, lignes),
-        ajout,
-        f.aide("Durée d'affichage des images ; une vidéo passe jusqu'à sa fin."),
-        ligne('Durée pour toutes', champToutes, el('span', { class: 'suffixe', text: 's' })),
-        ligne('Transition', f.liste(w, 'transition', TRANSITIONS)),
-        ligne("Mise à l'échelle", f.liste(w, 'echelle', ECHELLES)),
-        f.coche(w, 'muet', 'Couper le son des vidéos'),
+        liste,
+        boutonAjouter,
+        el('fieldset', { class: 'tous-elements' },
+            el('legend', { text: 'Pour tous les éléments' }),
+            images.length > 0 && ligne('Durée de chaque image', champToutes, el('span', { class: 'suffixe', text: 's' })),
+            f.aide("Une vidéo passe toujours jusqu'à sa fin."),
+            ligne('Transition', f.liste(w, 'transition', TRANSITIONS)),
+            ligne("Mise à l'échelle", f.liste(w, 'echelle', ECHELLES)),
+            schemaEffet(w),
+            f.coche(w, 'muet', 'Couper le son des vidéos')),
     ];
 }
 
 /**
- * Panneau complet. options : { page, numeroPage, indexRegion, regions, portrait, medias, modifie }.
- * modifie({ reconstruire, type }) est appelée à chaque changement.
+ * Panneau complet. options : { page, numeroPage, indexRegion, regions, portrait, medias, modifie,
+ * ajouterMedias }. modifie({ reconstruire, type }) est appelée à chaque changement ;
+ * ajouterMedias() ouvre le choix des médias et résout avec les médias choisis (liste, vide si annulé).
  */
-export function panneauProprietes({ page, numeroPage, indexRegion, regions, portrait, medias, modifie }) {
+export function panneauProprietes({ page, numeroPage, indexRegion, regions, portrait, medias, modifie, ajouterMedias }) {
     const f = champs(modifie);
+    f.ajouterMedias = ajouterMedias;
     f.modifie = () => modifie();
     f.modifieStructure = () => modifie({ reconstruire: true });
 

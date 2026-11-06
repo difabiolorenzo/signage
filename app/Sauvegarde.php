@@ -15,7 +15,7 @@ final class Sauvegarde
     public const APPLICATION = 'signage-studio-sauvegarde';
     public const FORMAT = 1;
     /** Tables sauvegardées, dans l'ordre d'insertion (tentatives_connexion, passagère, est exclue). */
-    public const TABLES = ['utilisateurs', 'chaines', 'droits', 'playlists', 'playlist_acces', 'programmations', 'medias', 'media_acces'];
+    public const TABLES = ['utilisateurs', 'chaines', 'droits', 'playlists', 'playlist_acces', 'programmations', 'medias', 'media_acces', 'parametres'];
     /** Sauvegardes automatiques faites avant chaque restauration (hors de public/). */
     private const DOSSIER = __DIR__ . '/../sauvegardes';
 
@@ -97,14 +97,22 @@ final class Sauvegarde
     }
 
     /**
-     * Adapte une sauvegarde faite avant la migration 005 (bibliothèque partagée), seule migration
-     * non additive : chaque playlist et chaque média deviennent restreints à leur ancienne chaîne
-     * (playlist_acces, media_acces), avec pour auteur leur dernier modificateur ou leur expéditeur,
-     * à défaut le premier administrateur. Tout autre document est renvoyé tel quel.
+     * Adapte une sauvegarde d'une version plus ancienne du schéma :
+     * - avant la migration 006, la table parametres n'existait pas : elle est restaurée vide
+     *   (réglages par défaut) ;
+     * - avant la migration 005 (bibliothèque partagée), seule migration non additive : chaque
+     *   playlist et chaque média deviennent restreints à leur ancienne chaîne (playlist_acces,
+     *   media_acces), avec pour auteur leur dernier modificateur ou leur expéditeur, à défaut le
+     *   premier administrateur.
+     * Tout autre document est renvoyé tel quel.
      */
     public static function convertir(mixed $document): mixed
     {
         $version = is_array($document) ? ($document['version_schema'] ?? null) : null;
+        if (is_int($version) && $version >= 1 && $version < 6 && is_array($document['tables'] ?? null)
+            && !array_key_exists('parametres', $document['tables'])) {
+            $document['tables']['parametres'] = [];
+        }
         $tables = is_array($document) ? ($document['tables'] ?? null) : null;
         if (!is_int($version) || $version < 1 || $version >= 5 || !is_array($tables)
             || isset($tables['playlist_acces']) || isset($tables['media_acces'])) {

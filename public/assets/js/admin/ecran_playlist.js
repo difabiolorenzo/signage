@@ -9,6 +9,7 @@ import { afficherPage, echelle } from '../lecteur/affichage.js';
 import { api } from './api.js';
 import { apercuDisposition, placer } from './apercu.js';
 import { choixDisposition } from './choix_disposition.js';
+import { choisirMedias } from './choix_medias.js';
 import { champ, confirmer, dialogue } from './dialogue.js';
 import { duree, el } from './dom.js';
 import { panneauProprietes } from './panneau.js';
@@ -61,6 +62,7 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
         page: 0,
         region: null,
         modifie: false,
+        multiChainesConfirme: false,
     };
     document.title = `${playlist.nom} — Signage Studio`;
     contexte.modificationsEnCours = () => etat.modifie;
@@ -356,6 +358,19 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
             }));
     }
 
+    /** Fenêtre de choix des médias ; les médias choisis (ou envoyés) rejoignent la liste connue de l'éditeur. */
+    async function ajouterMedias() {
+        // Fichiers envoyés depuis la fenêtre : ouverts à la chaîne de la page, si la playlist y a été ouverte.
+        const choisis = (await choisirMedias({ chaine: chaineId !== null && chaine ? chaine.id : null })) ?? [];
+        for (const m of choisis) {
+            if (!mediasParId.has(m.id)) {
+                medias.push(m);
+                mediasParId.set(m.id, m);
+            }
+        }
+        return choisis;
+    }
+
     function dessinerProprietes() {
         proprietes.replaceChildren(panneauProprietes({
             page: etat.pages[etat.page],
@@ -364,6 +379,7 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
             regions: etat.regions,
             portrait: etat.portrait,
             medias,
+            ajouterMedias,
             modifie: ({ reconstruire = false } = {}) => {
                 modifie();
                 if (reconstruire) {
@@ -431,12 +447,33 @@ export async function afficher(ecran, contexte, chaineId, playlistId) {
 
     // --- Enregistrement ---
     async function enregistrer() {
+        if (boutonEnregistrer.disabled) {
+            return; // lecture seule (Ctrl+S) ou enregistrement déjà en cours
+        }
         const message = !champNom.value.trim() ? 'Donnez un nom à la playlist.' : problemePlaylist(etat.pages);
         if (message) {
             probleme.textContent = message;
             probleme.hidden = false;
             contexte.notifier(`Non enregistré : ${message}`);
             return;
+        }
+        // Une playlist programmée sur plusieurs chaînes change partout : confirmation, une fois par ouverture.
+        const chaines = playlist.utilisee_par;
+        if (chaines.length > 1 && !etat.multiChainesConfirme) {
+            boutonEnregistrer.disabled = true;
+            const ok = await dialogue({
+                titre: 'Playlist utilisée par plusieurs chaînes',
+                texteValider: 'Enregistrer quand même',
+                corps: [
+                    el('p', { text: `Cette playlist passe sur ${chaines.length} chaînes (${chaines.map((c) => c.nom).join(', ')}).` }),
+                    el('p', { text: 'Vos modifications apparaîtront sur tous leurs afficheurs.' }),
+                ],
+            });
+            boutonEnregistrer.disabled = false;
+            if (ok !== true) {
+                return;
+            }
+            etat.multiChainesConfirme = true;
         }
         boutonEnregistrer.disabled = true;
         try {

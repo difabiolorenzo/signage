@@ -20,6 +20,15 @@ final class Db
                 PDO::ATTR_EMULATE_PREPARES => false,
                 PDO::ATTR_STRINGIFY_FETCHES => false,
             ]);
+            // Fuseau du panneau d'administration, à défaut celui de config.php (déjà appliqué par
+            // demarrage.php). La table manque avant la migration 006 : on garde alors config.php.
+            try {
+                $fuseau = $pdo->query("SELECT valeur FROM parametres WHERE cle = 'fuseau'")->fetchColumn();
+                if (is_string($fuseau) && Parametres::fuseauValide($fuseau)) {
+                    date_default_timezone_set($fuseau);
+                }
+            } catch (PDOException) {
+            }
             // Même fuseau que PHP pour CURRENT_TIMESTAMP (décalage numérique : ne demande pas
             // les tables de fuseaux de MySQL, souvent absentes sous Windows).
             $pdo->prepare('SET time_zone = ?')->execute([date('P')]);

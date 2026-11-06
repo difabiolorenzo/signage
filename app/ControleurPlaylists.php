@@ -103,7 +103,7 @@ final class ControleurPlaylists
         $medias = array_map(static fn (array $m): array => $m + ['accessible' => true], array_values($visibles));
         if ($manquants !== []) {
             $marques = implode(', ', array_fill(0, count($manquants), '?'));
-            foreach (Db::lignes("SELECT id, nom_origine, type, fichier FROM medias WHERE id IN ($marques)", $manquants) as $m) {
+            foreach (Db::lignes('SELECT ' . ControleurMedias::COLONNES_RESUME . " FROM medias o WHERE o.id IN ($marques)", $manquants) as $m) {
                 $medias[] = ControleurMedias::resume($m) + ['accessible' => false];
             }
         }

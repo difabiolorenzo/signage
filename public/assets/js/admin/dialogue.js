@@ -5,9 +5,10 @@ import { el } from './dom.js';
 /**
  * Ouvre une fenêtre. `valider` (facultatif, asynchrone) est appelée à l'envoi du formulaire :
  * si elle lève une erreur, son message s'affiche et la fenêtre reste ouverte ; sinon la
- * promesse se résout avec sa valeur de retour. Fermeture ou Annuler : null.
+ * promesse se résout avec sa valeur de retour. Fermeture ou Annuler : null. `preparer` (facultatif)
+ * reçoit le bouton de validation à l'ouverture, pour en changer le texte selon la saisie.
  */
-export function dialogue({ titre, corps = [], texteValider = 'Valider', danger = false, large = false, valider = null }) {
+export function dialogue({ titre, corps = [], texteValider = 'Valider', danger = false, large = false, valider = null, preparer = null }) {
     return new Promise((resoudre) => {
         let resolu = false;
         const terminer = (valeur) => {
@@ -55,6 +56,7 @@ export function dialogue({ titre, corps = [], texteValider = 'Valider', danger =
         });
 
         document.body.append(fenetre);
+        preparer?.(boutonValider);
         fenetre.showModal();
         fenetre.querySelector('input:not([type=hidden]), select, textarea')?.focus();
     });

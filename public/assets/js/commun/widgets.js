@@ -103,6 +103,17 @@ function dateLocale(date) {
 }
 
 /** Nouveau widget du type demandé, avec ses valeurs par défaut. */
+// Valeurs par défaut réglées dans le panneau d'administration (posées par l'éditeur ; le lecteur
+// n'en a pas besoin : chaque widget enregistre ses propres réglages).
+const preferences = { celsius: true };
+
+/** parametres : réponse de GET /api/parametres ({ meteo_celsius, … }). */
+export function definirPreferences(parametres) {
+    if (typeof parametres?.meteo_celsius === 'boolean') {
+        preferences.celsius = parametres.meteo_celsius;
+    }
+}
+
 export function widgetParDefaut(type = 'vide') {
     switch (type) {
         case 'media':
@@ -138,7 +149,7 @@ export function widgetParDefaut(type = 'vide') {
             };
         }
         case 'meteo':
-            return { type, ville: 'Paris', celsius: true, ...texte(TAILLE_HORLOGE) };
+            return { type, ville: 'Paris', celsius: preferences.celsius, ...texte(TAILLE_HORLOGE) };
         default:
             return { type: 'vide' };
     }

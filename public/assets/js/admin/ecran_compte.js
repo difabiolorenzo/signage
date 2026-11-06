@@ -1,14 +1,14 @@
-// Écran « Mon compte », pour tous les utilisateurs : nom affiché et mot de passe.
+// Écran « Mon compte », pour tous les utilisateurs : nom affiché, identifiant de connexion et mot de passe.
 
 import { basculeMotDePasse } from '../commun/mot_de_passe.js';
 import { api } from './api.js';
 import { champ } from './dialogue.js';
 import { el } from './dom.js';
-import { MOT_DE_PASSE_MIN } from './ecran_utilisateurs.js';
+import { AIDE_IDENTIFIANT, champIdentifiant, MOT_DE_PASSE_MIN } from './ecran_utilisateurs.js';
 import { ongletsAccueil } from './navigation.js';
 
 /** Formulaire en carte : `envoyer` lève une erreur pour l'afficher sous les champs. */
-function carteFormulaire(titre, champs, texteBouton, envoyer) {
+export function carteFormulaire(titre, champs, texteBouton, envoyer) {
     const erreur = el('p', { class: 'erreur', role: 'alert', hidden: true });
     const bouton = el('button', { type: 'submit', class: 'bouton principal', text: texteBouton });
     const formulaire = el('form', { class: 'carte formulaire-compte' }, el('h2', { text: titre }), champs, erreur, el('div', { class: 'actions' }, bouton));
@@ -49,6 +49,21 @@ export async function afficher(ecran, contexte) {
         contexte.notifier('Nom enregistré.');
     });
 
+    const identifiant = champIdentifiant(moi.identifiant);
+    identifiant.autocomplete = 'username';
+    const mdpIdentifiant = champSecret('Mot de passe actuel', 'current-password');
+    const carteIdentifiant = carteFormulaire('Identifiant de connexion', [
+        champ('Nouvel identifiant', identifiant, AIDE_IDENTIFIANT),
+        mdpIdentifiant.bloc,
+        el('p', { class: 'meta', text: 'Vos sessions ouvertes restent valides ; utilisez le nouvel identifiant à la prochaine connexion.' }),
+    ], 'Changer l\'identifiant', async () => {
+        const { utilisateur } = await api.put('/moi/identifiant', { identifiant: identifiant.value.trim(), mot_de_passe: mdpIdentifiant.entree.value });
+        mdpIdentifiant.entree.value = '';
+        contexte.majUtilisateur(utilisateur);
+        contexte.notifier(`Identifiant changé : ${utilisateur.identifiant}.`);
+        afficher(ecran, contexte);
+    });
+
     const ancien = champSecret('Mot de passe actuel', 'current-password');
     const nouveau = champSecret('Nouveau mot de passe', 'new-password', `${MOT_DE_PASSE_MIN} caractères au moins.`);
     const confirmation = champSecret('Nouveau mot de passe, à nouveau', 'new-password');
@@ -73,6 +88,6 @@ export async function afficher(ecran, contexte) {
     ecran.replaceChildren(contexte.cadre({
         ...ongletsAccueil(contexte, 'compte'),
         barre: [el('h1', { text: 'Mon compte' })],
-        contenu: el('div', { class: 'grille-compte' }, carteNom, carteMdp),
+        contenu: el('div', { class: 'grille-compte' }, carteNom, carteIdentifiant, carteMdp),
     }));
 }

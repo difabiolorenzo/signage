@@ -2,13 +2,15 @@
 
 import { api, definirJeton, ErreurApi, quandSessionPerdue } from './api.js';
 import { basculeMotDePasse } from '../commun/mot_de_passe.js';
+import { definirPreferences } from '../commun/widgets.js';
 import { el } from './dom.js';
+import * as ecranAdministration from './ecran_administration.js';
 import * as ecranBibliothequePlaylists from './ecran_bibliotheque_playlists.js';
 import * as ecranChaines from './ecran_chaines.js';
 import * as ecranCompte from './ecran_compte.js';
 import * as ecranMedias from './ecran_medias.js';
 import * as ecranProgrammation from './ecran_programmation.js';
-import * as ecranSauvegarde from './ecran_sauvegarde.js';
+import * as ecranReglagesChaine from './ecran_reglages_chaine.js';
 import * as ecranUtilisateurs from './ecran_utilisateurs.js';
 import * as ecranPlaylist from './ecran_playlist.js';
 import * as ecranPlaylists from './ecran_playlists.js';
@@ -106,7 +108,7 @@ async function router() {
 
     const m = /^\/chaines\/(\d+)$/.exec(chemin);
     const mPlaylist = /^\/chaines\/(\d+)\/playlists\/(\d+)$/.exec(chemin);
-    const mOnglet = /^\/chaines\/(\d+)\/(programmation|medias)$/.exec(chemin);
+    const mOnglet = /^\/chaines\/(\d+)\/(programmation|medias|reglages)$/.exec(chemin);
     const mBibliotheque = /^\/playlists\/(\d+)$/.exec(chemin);
     const ecran = el('div', { class: 'ecran' });
     document.title = 'Signage Studio — Éditeur';
@@ -114,7 +116,7 @@ async function router() {
     try {
         if (mOnglet) {
             // #/chaines/{id}/medias : ancienne adresse, menu « Médias » filtré sur la chaîne.
-            const ecranOnglet = mOnglet[2] === 'medias' ? ecranMedias : ecranProgrammation;
+            const ecranOnglet = { medias: ecranMedias, programmation: ecranProgrammation, reglages: ecranReglagesChaine }[mOnglet[2]];
             await ecranOnglet.afficher(ecran, contexte, Number(mOnglet[1]));
         } else if (chemin === '/playlists') {
             await ecranBibliothequePlaylists.afficher(ecran, contexte);
@@ -122,8 +124,9 @@ async function router() {
             await ecranMedias.afficher(ecran, contexte);
         } else if (mBibliotheque) {
             await ecranPlaylist.afficher(ecran, contexte, null, Number(mBibliotheque[1]));
-        } else if (chemin === '/sauvegarde') {
-            await ecranSauvegarde.afficher(ecran, contexte);
+        } else if (chemin === '/administration' || chemin === '/sauvegarde') {
+            // #/sauvegarde : ancienne adresse, la sauvegarde fait partie de l'écran Administration.
+            await ecranAdministration.afficher(ecran, contexte);
         } else if (chemin === '/compte') {
             await ecranCompte.afficher(ecran, contexte);
         } else if (chemin === '/utilisateurs') {
@@ -182,6 +185,8 @@ function ecranConnexion(message = '') {
 function ouvrirSession({ utilisateur: u, jeton }) {
     utilisateur = u;
     definirJeton(jeton);
+    // Valeurs par défaut des nouveaux widgets (unité météo) ; sans elles, celles du code.
+    api.get('/parametres').then((r) => definirPreferences(r.parametres)).catch(() => {});
     cheminAffiche = null;
     router();
 }

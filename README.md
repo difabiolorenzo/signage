@@ -101,9 +101,9 @@ Après avoir remplacé les fichiers par une nouvelle version, exécuter dans la 
 
 ## Sauvegarde
 
-Écran *Sauvegarde* de l'éditeur (administrateurs) :
+Écran *Administration* de l'éditeur (administrateurs), section *Sauvegarde de la base* :
 
-- **Télécharger une sauvegarde** : un fichier `signage_sauvegarde_AAAA-MM-JJ_HHMM.json` avec toute la base (chaînes, playlists, programmation, liste des médias, comptes et droits ; mots de passe sous forme d'empreintes uniquement).
+- **Télécharger une sauvegarde** : un fichier `signage_sauvegarde_AAAA-MM-JJ_HHMM.json` avec toute la base (chaînes, playlists, programmation, liste des médias, comptes et droits, réglages de l'écran Administration ; mots de passe sous forme d'empreintes uniquement, clé d'API météo en clair).
 - **Restaurer une sauvegarde** : remplace toutes les données par celles d'un fichier produit par le bouton précédent, d'une version de l'application identique ou plus ancienne. L'état actuel est d'abord enregistré sur le serveur dans le dossier `sauvegardes/`. À la fin, l'écran signale les médias dont le fichier manque et les fichiers qu'aucun média n'utilise.
 
 **Les médias ne sont pas dans la sauvegarde** : copiez aussi le dossier `public/uploads/` (et rapportez-le avant de restaurer sur un autre serveur). Le fichier de sauvegarde passe par l'envoi de fichiers de PHP : `upload_max_filesize` et `envoi_max_octets` doivent être assez grands.

@@ -35,13 +35,7 @@ final class ControleurUtilisateurs
     {
         Droits::exigerAdmin(Auth::exigerConnexion());
         $corps = Requete::json();
-        $identifiant = trim((string) ($corps['identifiant'] ?? ''));
-        if (!preg_match('/^[A-Za-z0-9._-]{3,64}$/', $identifiant)) {
-            Reponse::erreur('Identifiant : 3 à 64 caractères parmi lettres sans accent, chiffres, point, tiret et tiret bas.', 400);
-        }
-        if (Db::valeur('SELECT 1 FROM utilisateurs WHERE identifiant = ?', [$identifiant]) !== null) {
-            Reponse::erreur("L'identifiant « $identifiant » est déjà utilisé.", 409);
-        }
+        $identifiant = self::identifiant($corps['identifiant'] ?? '', null);
         $nom = self::nom($corps['nom'] ?? '');
         $role = self::role($corps['role'] ?? 'editeur');
         $empreinte = self::empreinte($corps['mot_de_passe'] ?? null);
@@ -52,14 +46,15 @@ final class ControleurUtilisateurs
         Reponse::json(['id' => Db::dernierId()], 201);
     }
 
-    /** PUT /api/utilisateurs/{id} { nom?, role?, actif?, mot_de_passe? } */
+    /** PUT /api/utilisateurs/{id} { identifiant?, nom?, role?, actif?, mot_de_passe? } */
     public static function modifier(int $id): never
     {
         $moi = Auth::exigerConnexion();
         Droits::exigerAdmin($moi);
-        $u = Db::ligne('SELECT id, nom, role, actif FROM utilisateurs WHERE id = ?', [$id])
+        $u = Db::ligne('SELECT id, identifiant, nom, role, actif FROM utilisateurs WHERE id = ?', [$id])
             ?? Reponse::erreur('Utilisateur introuvable.', 404);
         $corps = Requete::json();
+        $identifiant = array_key_exists('identifiant', $corps) ? self::identifiant($corps['identifiant'], $id) : $u['identifiant'];
 
         $nom = array_key_exists('nom', $corps) ? self::nom($corps['nom']) : $u['nom'];
         $role = array_key_exists('role', $corps) ? self::role($corps['role']) : $u['role'];
@@ -81,6 +76,7 @@ final class ControleurUtilisateurs
         }
 
         Db::executer('UPDATE utilisateurs SET nom = ?, role = ?, actif = ? WHERE id = ?', [$nom, $role, $actif ? 1 : 0, $id]);
+        self::changerIdentifiant($id, $u['identifiant'], $identifiant);
         if (array_key_exists('mot_de_passe', $corps)) {
             Db::executer('UPDATE utilisateurs SET mot_de_passe = ? WHERE id = ?', [self::empreinte($corps['mot_de_passe']), $id]);
             Auth::fermerSessions($id);
@@ -143,6 +139,37 @@ final class ControleurUtilisateurs
         Reponse::json(['ok' => true, 'avertissement' => $concernees === [] ? null
             : 'Cet utilisateur reste auteur de playlists diffusées sur des chaînes qu\'il ne gère plus, et peut toujours les modifier : '
                 . implode(', ', $concernees) . '. Transférez-les ou retirez-les de la programmation si besoin.']);
+    }
+
+    /**
+     * Identifiant de connexion valide et libre (en dehors du compte $id) ; sinon 400 ou 409.
+     * La comparaison suit la collation de la table : « Marie » et « marie » sont le même identifiant.
+     */
+    public static function identifiant(mixed $valeur, ?int $id): string
+    {
+        $identifiant = trim((string) $valeur);
+        if (!preg_match('/^[A-Za-z0-9._-]{3,64}$/', $identifiant)) {
+            Reponse::erreur('Identifiant : 3 à 64 caractères parmi lettres sans accent, chiffres, point, tiret et tiret bas.', 400);
+        }
+        if (Db::valeur('SELECT 1 FROM utilisateurs WHERE identifiant = ? AND id <> ?', [$identifiant, $id ?? 0]) !== null) {
+            Reponse::erreur("L'identifiant « $identifiant » est déjà utilisé.", 409);
+        }
+        return $identifiant;
+    }
+
+    /**
+     * Remplace l'identifiant de connexion. Les sessions ouvertes restent valides (elles reposent
+     * sur l'id) ; les échecs de connexion notés sous l'ancien identifiant sont effacés.
+     */
+    public static function changerIdentifiant(int $id, string $ancien, string $nouveau): void
+    {
+        if ($nouveau === $ancien) {
+            return;
+        }
+        Db::transaction(static function () use ($id, $ancien, $nouveau): void {
+            Db::executer('UPDATE utilisateurs SET identifiant = ? WHERE id = ?', [$nouveau, $id]);
+            Db::executer('DELETE FROM tentatives_connexion WHERE identifiant = ?', [$ancien]);
+        });
     }
 
     public static function nom(mixed $nom): string

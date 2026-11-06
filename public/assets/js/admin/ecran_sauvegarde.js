@@ -1,9 +1,9 @@
-// Écran « Sauvegarde » (administrateurs) : télécharger une sauvegarde de la base, en restaurer une.
+// Section « Sauvegarde » de l'écran Administration (administrateurs) : télécharger une sauvegarde
+// de la base, en restaurer une.
 
 import { api, envoyerFichier } from './api.js';
 import { confirmer } from './dialogue.js';
 import { el } from './dom.js';
-import { ongletsAccueil } from './navigation.js';
 
 const AVERTISSEMENT_MEDIAS = 'Les médias (images et vidéos du dossier public/uploads/) ne sont pas inclus : copiez ce dossier à la main pour les sauvegarder.';
 
@@ -28,12 +28,8 @@ function resultat(r) {
         el('button', { type: 'button', class: 'bouton principal', text: 'Recharger l’éditeur', onclick: () => location.reload() }));
 }
 
-export async function afficher(ecran, contexte) {
-    document.title = 'Sauvegarde — Signage Studio';
-    if (!contexte.estAdmin()) {
-        ecran.replaceChildren(contexte.cadre({ ...ongletsAccueil(contexte, ''), contenu: el('p', { class: 'erreur', text: 'Réservé aux administrateurs.' }) }));
-        return;
-    }
+/** Cartes « Télécharger » et « Restaurer ». */
+export async function cartesSauvegarde(contexte) {
     const { version_base: versionBase, version_application: versionApplication } = await api.get('/sauvegarde');
     const aJour = versionBase === versionApplication;
 
@@ -49,10 +45,10 @@ export async function afficher(ecran, contexte) {
     const bouton = el('button', { type: 'submit', class: 'bouton danger', text: 'Restaurer une sauvegarde', disabled: !aJour });
     const zoneResultat = el('div', {});
     const formulaire = el('form', { class: 'carte formulaire-compte' },
-        el('h2', { text: 'Restaurer' }),
+        el('h2', { text: 'Restaurer une sauvegarde' }),
         el('p', { text: 'Seuls les fichiers produits par « Télécharger une sauvegarde » sont acceptés, d’une version de l’application identique ou plus ancienne.' }),
         el('label', { class: 'champ' }, el('span', { text: 'Fichier de sauvegarde' }), fichier),
-        el('label', { class: 'case' }, caseConfirmation, ' Je comprends que toutes les données actuelles (chaînes, playlists, programmation, médias, comptes) seront remplacées.'),
+        el('label', { class: 'case' }, caseConfirmation, ' Je comprends que toutes les données actuelles (chaînes, playlists, programmation, médias, comptes, réglages) seront remplacées.'),
         el('p', { class: 'meta', text: 'L’état actuel est d’abord sauvegardé automatiquement sur le serveur (dossier sauvegardes/). L’import se fait en tout ou rien.' }),
         erreur, progression,
         el('div', { class: 'actions' }, bouton),
@@ -93,16 +89,13 @@ export async function afficher(ecran, contexte) {
         }
     });
 
-    ecran.replaceChildren(contexte.cadre({
-        ...ongletsAccueil(contexte, 'sauvegarde'),
-        barre: [el('h1', { text: 'Sauvegarde de la base' })],
-        contenu: el('div', { class: 'grille-compte' },
-            el('section', { class: 'carte formulaire-compte' },
-                el('h2', { text: 'Télécharger' }),
-                el('p', { text: 'Fichier JSON de toute la base : chaînes, playlists, programmation, liste des médias, comptes et droits (mots de passe sous forme d’empreintes uniquement).' }),
-                el('p', { class: 'avertissement', text: AVERTISSEMENT_MEDIAS }),
-                el('p', { class: 'meta', text: `Version du schéma : ${versionBase}.` }),
-                el('div', { class: 'actions' }, telecharger)),
-            formulaire),
-    }));
+    return [
+        el('section', { class: 'carte formulaire-compte' },
+            el('h2', { text: 'Télécharger une sauvegarde' }),
+            el('p', { text: 'Fichier JSON de toute la base : chaînes, playlists, programmation, liste des médias, comptes et droits (mots de passe sous forme d’empreintes uniquement), réglages de cet écran (clé d’API météo comprise, en clair : gardez le fichier en lieu sûr).' }),
+            el('p', { class: 'avertissement', text: AVERTISSEMENT_MEDIAS }),
+            el('p', { class: 'meta', text: `Version du schéma : ${versionBase}.` }),
+            el('div', { class: 'actions' }, telecharger)),
+        formulaire,
+    ];
 }

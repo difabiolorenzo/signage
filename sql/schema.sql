@@ -94,10 +94,12 @@ CREATE TABLE IF NOT EXISTS programmations (
 
 -- duree en secondes (vidéos) ; largeur et hauteur en pixels. envoye_par : qui a envoyé le
 -- fichier ; auteur_id : responsable actuel (transférable). portee : comme pour les playlists,
--- mais elle dit qui peut insérer le média dans une playlist, pas où il s'affiche.
+-- mais elle dit qui peut insérer le média dans une playlist, pas où il s'affiche. vignette
+-- (migration 007) : fichier de public/uploads/vignettes/, NULL tant qu'elle n'est pas générée.
 CREATE TABLE IF NOT EXISTS medias (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     fichier VARCHAR(64) NOT NULL,
+    vignette VARCHAR(64) NULL,
     nom_origine VARCHAR(255) NOT NULL,
     type VARCHAR(64) NOT NULL,
     taille BIGINT UNSIGNED NOT NULL,
@@ -169,12 +171,20 @@ CREATE TABLE IF NOT EXISTS tentatives_connexion (
     KEY ix_tentatives_quand (quand)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Réglages globaux du panneau d'administration (migration 006) : clé / valeur, une clé absente
+-- prend sa valeur par défaut (app/Parametres.php).
+CREATE TABLE IF NOT EXISTS parametres (
+    cle VARCHAR(64) NOT NULL,
+    valeur TEXT NOT NULL,
+    PRIMARY KEY (cle)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Numéro de la dernière migration de sql/migrations/ intégrée à ce schéma (migration 004).
 -- À mettre à jour à chaque nouvelle migration.
 CREATE TABLE IF NOT EXISTS version_schema (
     version INT UNSIGNED NOT NULL,
     PRIMARY KEY (version)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-INSERT INTO version_schema (version) SELECT 5 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM version_schema);
+INSERT INTO version_schema (version) SELECT 7 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM version_schema);
 
 SET FOREIGN_KEY_CHECKS = 1;

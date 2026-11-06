@@ -1,12 +1,14 @@
 // Menu « Médias » : médias de la bibliothèque visibles par l'utilisateur, filtrés par chaîne,
 // auteur, portée et type ; envoi par glisser-déposer ou sélection de fichiers (ouvert à la chaîne
 // du filtre, sinon privé) ; portée « utilisable par… » et suppression par l'auteur ou un
-// administrateur (suppression refusée si une playlist utilise le média).
+// administrateur (suppression refusée si une playlist utilise le média). Les vignettes manquantes
+// sont refaites à l'ouverture (envoi_medias.js).
 
-import { api, envoyerFichier } from './api.js';
+import { api } from './api.js';
 import { boutonsBibliotheque, filtres, optionsAuteurs, OPTIONS_PORTEE, textePortee } from './bibliotheque.js';
 import { confirmer } from './dialogue.js';
 import { dateCourte, duree, el } from './dom.js';
+import { adresseVignette, envoyerMedias, regenererVignettes, taille } from './envoi_medias.js';
 import { ongletsAccueil } from './navigation.js';
 
 // Conservés pendant la session de l'éditeur.
@@ -20,40 +22,13 @@ function retenu(m) {
         && (!valeurs.type || m.type.startsWith(`${valeurs.type}/`));
 }
 
-function taille(octets) {
-    if (octets >= 1024 * 1024) {
-        return `${(octets / 1024 / 1024).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo`;
-    }
-    return `${Math.max(1, Math.round(octets / 1024))} Ko`;
-}
-
-/** Dimensions et durée d'une vidéo, lues par le navigateur (le serveur ne sait pas les mesurer). */
-function mesurerVideo(fichier) {
-    return new Promise((resoudre) => {
-        const video = document.createElement('video');
-        const url = URL.createObjectURL(fichier);
-        const fin = (valeurs) => {
-            URL.revokeObjectURL(url);
-            resoudre(valeurs);
-        };
-        video.preload = 'metadata';
-        video.muted = true;
-        video.addEventListener('loadedmetadata', () => fin({
-            largeur: video.videoWidth || null, hauteur: video.videoHeight || null,
-            duree: Number.isFinite(video.duration) ? video.duration : null,
-        }), { once: true });
-        video.addEventListener('error', () => fin({}), { once: true });
-        setTimeout(() => fin({}), 5000);
-        video.src = url;
-    });
-}
-
 function vignette(media) {
-    if (media.type.startsWith('video/')) {
-        // #t=0.5 : le navigateur montre une image de la vidéo plutôt qu'un cadre noir.
-        return el('video', { class: 'vignette-media', src: `${media.url}#t=0.5`, preload: 'metadata', muted: true, 'aria-hidden': 'true' });
+    const adresse = adresseVignette(media);
+    if (adresse) {
+        return el('img', { class: 'vignette-media', src: adresse, alt: '', loading: 'lazy' });
     }
-    return el('img', { class: 'vignette-media', src: media.url, alt: '', loading: 'lazy' });
+    // Vidéo sans vignette (en cours de création) : #t=0.5 montre une image plutôt qu'un cadre noir.
+    return el('video', { class: 'vignette-media', src: `${media.url}#t=0.5`, preload: 'metadata', muted: true, 'aria-hidden': 'true' });
 }
 
 function carteMedia(media, contexte, rafraichir) {
@@ -111,9 +86,20 @@ export async function afficher(ecran, contexte, chaineId = null) {
     const compte = el('p', { class: 'meta', 'aria-live': 'polite' });
     const destination = el('p', { class: 'aide' });
 
+    let ecranQuitte = false;
+    contexte.surQuitter(() => { ecranQuitte = true; });
+    /** Vignettes manquantes refaites en arrière-plan ; la grille est redessinée à chaque réussite. */
+    function completerVignettes() {
+        regenererVignettes(medias, () => {
+            if (!ecranQuitte) {
+                dessinerListe();
+            }
+        });
+    }
     async function rafraichirListe(message) {
         medias = (await api.get('/medias')).medias;
         dessinerListe();
+        completerVignettes();
         if (message) {
             contexte.notifier(message);
         }
@@ -130,56 +116,10 @@ export async function afficher(ecran, contexte, chaineId = null) {
             : retenus.map((m) => carteMedia(m, contexte, rafraichirListe))));
     }
 
-    /** Envoie les fichiers un par un, avec une ligne de suivi chacun. */
     async function envoyer(fichiers) {
-        let envoyes = 0;
-        for (const fichier of fichiers) {
-            const barre = el('progress', { max: 1, value: 0 });
-            const etat = el('span', { class: 'etat-envoi', text: 'En attente…' });
-            const ligne = el('li', {}, el('span', { class: 'nom-fichier', text: fichier.name }), barre, etat);
-            suivi.prepend(ligne);
-
-            const erreur = (texte) => {
-                ligne.classList.add('echec');
-                barre.remove();
-                etat.textContent = texte;
-            };
-            if (!types.includes(fichier.type)) {
-                erreur('Type non accepté : JPEG, PNG, WebP, GIF, MP4 ou WebM.');
-                continue;
-            }
-            if (tailleMax > 0 && fichier.size > tailleMax) {
-                erreur(`Trop volumineux (${taille(fichier.size)}) : la limite est de ${taille(tailleMax)}.`);
-                continue;
-            }
-            const donnees = new FormData();
-            donnees.append('fichier', fichier);
-            if (valeurs.chaine) {
-                donnees.append('chaine', valeurs.chaine);
-            }
-            if (fichier.type.startsWith('video/')) {
-                const mesures = await mesurerVideo(fichier);
-                for (const [cle, valeur] of Object.entries(mesures)) {
-                    if (valeur !== null && valeur !== undefined) {
-                        donnees.append(cle, String(valeur));
-                    }
-                }
-            }
-            etat.textContent = 'Envoi…';
-            try {
-                await envoyerFichier('/medias', donnees, (fraction) => {
-                    barre.value = fraction;
-                });
-                barre.remove();
-                ligne.classList.add('reussi');
-                etat.textContent = 'Envoyé';
-                envoyes++;
-            } catch (e) {
-                erreur(e.message);
-            }
-        }
-        if (envoyes > 0) {
-            contexte.notifier(`${envoyes} fichier(s) envoyé(s).`);
+        const crees = await envoyerMedias(fichiers, { types, tailleMax, chaine: valeurs.chaine, suivi });
+        if (crees.length > 0) {
+            contexte.notifier(`${crees.length} fichier(s) envoyé(s).`);
             await rafraichirListe();
         }
     }
@@ -226,6 +166,7 @@ export async function afficher(ecran, contexte, chaineId = null) {
     ], valeurs, dessinerListe);
 
     dessinerListe();
+    completerVignettes();
     ecran.replaceChildren(contexte.cadre({
         ...ongletsAccueil(contexte, 'medias'),
         barre: [

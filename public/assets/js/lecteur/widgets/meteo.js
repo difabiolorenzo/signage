@@ -1,4 +1,6 @@
-// Widget Météo : temps actuel et prévisions d'une ville, d'après Open-Meteo (service sans clé).
+// Widget Météo : temps actuel et prévisions d'une ville, d'après Open-Meteo : en direct (service
+// gratuit, sans clé) ou, si le panneau d'administration règle un service à clé d'API, par le relais
+// du serveur (GET /api/public/{slug}/meteo), qui garde la clé.
 // Quatre modèles d'affichage, qui s'adaptent à la forme de leur région (requêtes de conteneur,
 // voir lecteur.css). Rafraîchi toutes les 30 minutes ; en cas d'échec, la dernière valeur reste.
 
@@ -51,7 +53,11 @@ async function position(ville) {
     return positions.get(ville);
 }
 
-async function telecharger(ville, celsius, nbJours) {
+async function telecharger(ville, celsius, nbJours, contexte) {
+    if (contexte?.meteoRelais && contexte.urlApi) {
+        const p = new URLSearchParams({ ville, jours: String(nbJours), celsius: celsius ? '1' : '0' });
+        return { ...(await json(`${contexte.urlApi}/meteo?${p}`)), quand: Date.now() };
+    }
     const lieu = await position(ville);
     const p = new URLSearchParams({
         latitude: String(lieu.latitude),
@@ -128,7 +134,7 @@ function rendu(modele, d, unite, nbJours) {
     }
 }
 
-export function creer(region, reglages) {
+export function creer(region, reglages, contexte) {
     const ville = String(reglages.ville ?? '').trim();
     const celsius = reglages.celsius !== false;
     const unite = celsius ? 'C' : 'F';
@@ -151,7 +157,7 @@ export function creer(region, reglages) {
     let detruit = false;
     async function rafraichir() {
         try {
-            const d = await telecharger(ville, celsius, nbJours);
+            const d = await telecharger(ville, celsius, nbJours, contexte);
             derniers.set(cle, d);
             if (!detruit) {
                 afficher(d);

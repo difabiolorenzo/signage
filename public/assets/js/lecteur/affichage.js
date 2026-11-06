@@ -4,7 +4,8 @@
 // { detruire() } (ou null s'il n'a rien à nettoyer). Les tailles de texte s'appuient sur la
 // variable CSS --echelle, posée sur l'élément qui contient la page (voir echelle()).
 //
-// contexte : { maintenant() → Date (horloge du serveur), urlApi (API publique de la chaîne) }.
+// contexte : { maintenant() → Date (horloge du serveur), urlApi (API publique de la chaîne),
+// meteoRelais (météo par le relais du serveur ; absent dans l'aperçu : accès direct) }.
 
 import { ECRAN_REFERENCE } from '../commun/widgets.js';
 import * as media from './widgets/media.js';

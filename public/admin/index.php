@@ -10,7 +10,8 @@ header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: same-origin');
 header('X-Frame-Options: DENY');
 // L'aperçu de l'éditeur utilise le code du lecteur : météo (Open-Meteo), Page web et YouTube en iframe.
-header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; "
+// media-src blob: : une vidéo choisie est lue sur place avant l'envoi (dimensions, durée, vignette).
+header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; "
     . "connect-src 'self' https://api.open-meteo.com https://geocoding-api.open-meteo.com; frame-src http: https:; "
     . "frame-ancestors 'none'; form-action 'self'; base-uri 'none'; object-src 'none'");
 

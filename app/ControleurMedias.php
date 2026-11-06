@@ -19,24 +19,27 @@ final class ControleurMedias
         'video/webm' => 'webm',
     ];
 
-    private const COLONNES = 'o.id, o.fichier, o.nom_origine, o.type, o.taille, o.largeur, o.hauteur, o.duree, o.envoye_le, o.auteur_id, o.portee';
+    private const COLONNES = 'o.id, o.fichier, o.vignette, o.nom_origine, o.type, o.taille, o.largeur, o.hauteur, o.duree, o.envoye_le, o.auteur_id, o.portee';
 
     /**
      * Médias que l'utilisateur peut insérer dans une playlist, pour l'éditeur de pages.
      *
-     * @return array<int, array{id: int, nom: string, type: string, url: string}>
+     * @return array<int, array{id: int, nom: string, type: string, url: string, vignette: ?string}>
      */
     public static function visibles(array $u): array
     {
         [$visible, $params] = Droits::sqlVisible('media', $u);
         $resultat = [];
-        foreach (Db::lignes("SELECT o.id, o.nom_origine, o.type, o.fichier FROM medias o WHERE $visible ORDER BY o.nom_origine", $params) as $m) {
+        foreach (Db::lignes('SELECT ' . self::COLONNES_RESUME . " FROM medias o WHERE $visible ORDER BY o.nom_origine", $params) as $m) {
             $resultat[(int) $m['id']] = self::resume($m);
         }
         return $resultat;
     }
 
-    /** Nom, type et URL d'un média (ligne avec id, nom_origine, type, fichier). */
+    /** Colonnes lues par resume(). */
+    public const COLONNES_RESUME = 'o.id, o.nom_origine, o.type, o.fichier, o.vignette, o.largeur, o.hauteur, o.duree';
+
+    /** Nom, type, URL, vignette (null si pas encore générée), dimensions et durée d'un média. */
     public static function resume(array $m): array
     {
         return [
@@ -44,6 +47,10 @@ final class ControleurMedias
             'nom' => $m['nom_origine'],
             'type' => $m['type'],
             'url' => Config::get('url_base') . '/uploads/' . rawurlencode($m['fichier']),
+            'vignette' => Vignettes::url($m['vignette']),
+            'largeur' => $m['largeur'] === null ? null : (int) $m['largeur'],
+            'hauteur' => $m['hauteur'] === null ? null : (int) $m['hauteur'],
+            'duree' => $m['duree'] === null ? null : (float) $m['duree'],
         ];
     }
 
@@ -93,7 +100,7 @@ final class ControleurMedias
 
     /**
      * POST /api/medias (multipart : fichier ; chaine facultative ; pour une vidéo, largeur, hauteur,
-     * duree mesurées par le navigateur). Avec chaine (où l'utilisateur a un droit) : restreint à
+     * duree mesurées par le navigateur et vignette, image capturée vers 1 s). Avec chaine (où l'utilisateur a un droit) : restreint à
      * cette chaîne ; sinon privé.
      */
     public static function envoyer(): never
@@ -153,13 +160,15 @@ final class ControleurMedias
             throw new RuntimeException("Impossible d'écrire $chemin.");
         }
         @chmod($chemin, 0644);
+        // Vignette : facultative, son échec n'empêche pas l'envoi (l'écran Médias la refera).
+        $vignette = str_starts_with($type, 'image/') ? Vignettes::creer($chemin, $type) : Vignettes::depuisEnvoi('vignette');
 
         try {
-            $id = Db::transaction(static function () use ($fichier, $nomOrigine, $type, $f, $largeur, $hauteur, $duree, $u, $chaine): int {
+            $id = Db::transaction(static function () use ($fichier, $vignette, $nomOrigine, $type, $f, $largeur, $hauteur, $duree, $u, $chaine): int {
                 Db::executer(
-                    'INSERT INTO medias (fichier, nom_origine, type, taille, largeur, hauteur, duree, envoye_par, auteur_id)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [$fichier, $nomOrigine, $type, (int) $f['size'], $largeur, $hauteur, $duree, $u['id'], $u['id']]
+                    'INSERT INTO medias (fichier, vignette, nom_origine, type, taille, largeur, hauteur, duree, envoye_par, auteur_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [$fichier, $vignette, $nomOrigine, $type, (int) $f['size'], $largeur, $hauteur, $duree, $u['id'], $u['id']]
                 );
                 $id = Db::dernierId();
                 Bibliotheque::ecrireAcces('media', $id, $chaine === null ? [] : [$chaine], []);
@@ -167,6 +176,7 @@ final class ControleurMedias
             });
         } catch (Throwable $e) {
             @unlink($chemin);
+            Vignettes::supprimer($vignette);
             throw $e;
         }
         $m = Db::ligne(
@@ -193,7 +203,37 @@ final class ControleurMedias
         if (preg_match('/^[A-Za-z0-9._-]+$/', $fichier) && is_file(self::dossier() . $fichier)) {
             unlink(self::dossier() . $fichier);
         }
+        Vignettes::supprimer($m['vignette']);
         Reponse::json(['ok' => true]);
+    }
+
+    /**
+     * POST /api/medias/{id}/vignette (droit de modifier le média) : refait la vignette. Image : par
+     * le serveur, à partir du fichier ; vidéo : à partir de l'image capturée envoyée dans le champ
+     * vignette (multipart). Renvoie { vignette: url }.
+     */
+    public static function regenererVignette(int $mediaId): never
+    {
+        $u = Auth::exigerConnexion();
+        $m = Droits::exigerObjet($u, 'media', $mediaId, 'modifier');
+        $chemin = self::dossier() . $m['fichier'];
+        if (str_starts_with((string) $m['type'], 'image/')) {
+            if (!is_file($chemin)) {
+                Reponse::erreur('Fichier du média introuvable dans public/uploads/.', 404);
+            }
+            $vignette = Vignettes::creer($chemin, (string) $m['type']);
+        } else {
+            if (!isset($_FILES['vignette'])) {
+                Reponse::erreur('vignette : image capturée de la vidéo attendue.', 400);
+            }
+            $vignette = Vignettes::depuisEnvoi('vignette');
+        }
+        if ($vignette === null) {
+            Reponse::erreur('Vignette impossible à créer (image illisible ou extension GD de PHP absente).', 422);
+        }
+        Db::executer('UPDATE medias SET vignette = ? WHERE id = ?', [$vignette, $mediaId]);
+        Vignettes::supprimer($m['vignette']);
+        Reponse::json(['vignette' => Vignettes::url($vignette)]);
     }
 
     /** « Accueil, Menu, 2 autre(s) playlist(s) » */
@@ -217,6 +257,7 @@ final class ControleurMedias
             'hauteur' => $m['hauteur'] === null ? null : (int) $m['hauteur'],
             'duree' => $m['duree'] === null ? null : (float) $m['duree'],
             'url' => Config::get('url_base') . '/uploads/' . rawurlencode($m['fichier']),
+            'vignette' => Vignettes::url($m['vignette']),
             'envoye_le' => $m['envoye_le'],
             'envoye_par' => $m['envoye_par'],
             'auteur' => $m['auteur_id'] === null ? null : ['id' => (int) $m['auteur_id'], 'nom' => $m['auteur']],
@@ -245,23 +286,10 @@ final class ControleurMedias
         return dirname(__DIR__) . '/public/uploads/';
     }
 
-    /** Taille maximale réellement acceptée : config.php, upload_max_filesize et post_max_size. */
+    /** Taille maximale réellement acceptée : panneau d'administration, upload_max_filesize et post_max_size. */
     private static function tailleMax(): int
     {
-        $octets = static function (string $valeur): int {
-            $n = (int) $valeur;
-            return match (strtolower(substr(trim($valeur), -1))) {
-                'g' => $n * 1024 ** 3,
-                'm' => $n * 1024 ** 2,
-                'k' => $n * 1024,
-                default => $n,
-            };
-        };
-        $limites = array_filter([
-            (int) Config::get('envoi_max_octets'),
-            $octets((string) ini_get('upload_max_filesize')),
-            $octets((string) ini_get('post_max_size')),
-        ], static fn (int $v): bool => $v > 0);
+        $limites = array_filter([Parametres::envoiMaxOctets(), Parametres::limitePhpOctets()], static fn (int $v): bool => $v > 0);
         return $limites === [] ? 0 : min($limites);
     }
 

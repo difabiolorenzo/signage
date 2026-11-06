@@ -1,5 +1,6 @@
-// Écran « Chaînes » : chaînes autorisées et leur lien public ; création, modification et
-// suppression réservées aux administrateurs (vérifié aussi par l'API).
+// Écran « Chaînes » : chaînes autorisées et leur lien public ; création et suppression réservées
+// aux administrateurs (vérifié aussi par l'API). Nom, adresse et orientation d'une chaîne
+// existante se règlent dans son onglet « Réglages » (ecran_reglages_chaine.js).
 
 import { api } from './api.js';
 import { champ, dialogue } from './dialogue.js';
@@ -12,8 +13,11 @@ function versSlug(texte) {
         .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
 }
 
-/** Fenêtre de création ou de modification ; renvoie la chaîne enregistrée, ou null. */
-function formulaireChaine(chaine = null) {
+/**
+ * Champs nom, adresse et orientation, pré-remplis avec `chaine` (vides pour une création) ;
+ * valeurs() renvoie le corps à envoyer à l'API.
+ */
+export function champsChaine(chaine = null) {
     const nom = el('input', { required: true, maxlength: 100, value: chaine?.nom ?? '' });
     const slug = el('input', {
         required: true, maxlength: 64, pattern: '[a-z0-9]+(-[a-z0-9]+)*', value: chaine?.slug ?? '', spellcheck: 'false',
@@ -36,19 +40,24 @@ function formulaireChaine(chaine = null) {
     const aideSlug = chaine
         ? "Attention : changer l'adresse coupe les afficheurs qui utilisent l'ancienne."
         : 'Minuscules sans accent, chiffres et tirets. Apparaît dans l\'URL : ?chaine=…';
-    return dialogue({
-        titre: chaine ? 'Modifier la chaîne' : 'Nouvelle chaîne',
-        texteValider: chaine ? 'Enregistrer' : 'Créer',
-        corps: [
+    return {
+        elements: [
             champ('Nom', nom),
             champ('Adresse (slug)', slug, aideSlug),
             champ('Orientation des écrans', orientation),
         ],
-        valider: async () => {
-            const corps = { nom: nom.value, slug: slug.value, orientation: orientation.value };
-            const r = chaine ? await api.put(`/chaines/${chaine.id}`, corps) : await api.post('/chaines', corps);
-            return r.chaine;
-        },
+        valeurs: () => ({ nom: nom.value, slug: slug.value, orientation: orientation.value }),
+    };
+}
+
+/** Fenêtre de création ; renvoie la chaîne créée, ou null. */
+function nouvelleChaine() {
+    const champs = champsChaine();
+    return dialogue({
+        titre: 'Nouvelle chaîne',
+        texteValider: 'Créer',
+        corps: champs.elements,
+        valider: async () => (await api.post('/chaines', champs.valeurs())).chaine,
     });
 }
 
@@ -74,18 +83,9 @@ function supprimerChaine(chaine) {
 
 function carte(chaine, contexte, rafraichir) {
     const lien = adresseComplete(chaine.lien_public);
-    const actions = [el('a', { class: 'bouton principal', href: `#/chaines/${chaine.id}`, text: 'Ouvrir' })];
+    const actions = [el('a', { class: 'bouton principal', href: `#/chaines/${chaine.id}`, text: 'Modifier' })];
     if (contexte.estAdmin()) {
         actions.push(
-            el('button', {
-                type: 'button', class: 'bouton', text: 'Modifier',
-                onclick: async () => {
-                    if (await formulaireChaine(chaine)) {
-                        contexte.notifier('Chaîne enregistrée.');
-                        rafraichir();
-                    }
-                },
-            }),
             el('button', {
                 type: 'button', class: 'bouton danger', text: 'Supprimer',
                 onclick: async () => {
@@ -113,7 +113,7 @@ export async function afficher(ecran, contexte) {
         barre.push(el('button', {
             type: 'button', class: 'bouton principal', text: '+ Chaîne',
             onclick: async () => {
-                const chaine = await formulaireChaine();
+                const chaine = await nouvelleChaine();
                 if (chaine) {
                     contexte.notifier(`Chaîne « ${chaine.nom} » créée.`);
                     rafraichir();
